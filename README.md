@@ -10,9 +10,10 @@ A five-minute live demo that runs **real** AWS compute against **real** Human Mi
 Project data and shows every dollar as it happens.
 
 **What it does:**
-1. Stages 100 HMP shotgun sequencing samples from RODA (`s3://sra-pub-run-odp/`) into your S3 bucket.
-2. Launches 8× Graviton3 `c7g.4xlarge` instances via [spawn](https://spore.host), each running
+1. Launches 8× Graviton3 `c7g.4xlarge` instances via [spawn](https://spore.host), each running
    [nf-core/taxprofiler](https://nf-co.re/taxprofiler) (Kraken2 + MetaPhlAn) against a pre-baked AMI.
+2. Each worker pulls its assigned HMP samples **directly from RODA**
+   (`s3://sra-pub-run-odp/`) — no data staging, no copying, no S3 storage cost for the data.
 3. Streams live progress to a local dashboard — cost meter ticking, worker dots going green.
 4. When done, calls Bedrock Claude Sonnet to synthesize three plain-language insights.
 
@@ -22,7 +23,7 @@ Project data and shows every dollar as it happens.
 
 ```bash
 brew install spore-host/tap/spawn   # the spawn CLI (auto-provisions EC2)
-brew install uv                    # fast Python package manager
+brew install uv                     # fast Python package manager
 ```
 
 AWS credentials configured as the `aws` profile (`~/.aws/credentials`).  Needs EC2,
@@ -33,18 +34,10 @@ S3, and Bedrock permissions.
 ```bash
 cp config.example.py config.py
 # edit config.py: set REGION, ACCOUNT_ID, BUCKET
+make install
 ```
 
-### 1. Stage the corpus
-
-Copies 100 HMP SRA files from the public RODA bucket into your S3 bucket.
-S3→S3 transfer, no laptop bandwidth used.
-
-```bash
-make corpus          # ~5-10 minutes, free (intra-region S3→S3)
-```
-
-### 2. Bake the AMI
+### Bake the AMI
 
 Builds an Amazon Linux 2023 ARM64 AMI with Nextflow, nf-core/taxprofiler Singularity image,
 and the Kraken2 `k2_pluspf_16GB` database pre-staged — so demo instances boot ready to run.
@@ -54,11 +47,7 @@ make ami             # ~30-45 minutes, ~$1-2 EC2 cost
 # After completion, paste the AMI_ID into config.py
 ```
 
-### 3. Install Python dependencies
-
-```bash
-make install
-```
+That's it — no corpus staging step.  Workers pull HMP data from RODA at runtime.
 
 ## Running the demo
 
@@ -71,9 +60,10 @@ Opens a browser to `http://127.0.0.1:8000`.  Press **Start Analysis** to launch 
 ## Teardown
 
 ```bash
-make teardown        # stops any running instances, deletes the S3 corpus bucket
+make teardown        # stops any running instances, deletes the S3 results bucket
 ```
 
+The S3 bucket holds only tiny SRR slice lists and result JSONs (~a few MB total).
 The AMI itself is not deleted automatically (no ongoing hourly charge; EBS snapshots
 cost ~$0.05/GB-month).  Deregister manually if desired:
 
@@ -84,17 +74,18 @@ aws ec2 deregister-image --image-id <AMI_ID> --region us-east-1
 ## Project layout
 
 ```
-corpus_prep.py          stage HMP samples in S3
 build_ami.py            bake the pre-installed worker AMI
 teardown.py             clean up all AWS resources
 config.example.py       copy → config.py and fill in
 
 src/microbiome_demo/
+  accessions.py         curated HMP SRR accession list (34 stool, 33 oral, 33 nasal)
   app.py                FastAPI server: /ws WebSocket + /api/start + /api/results
   spawn.py              programmatic wrapper around the spawn CLI
   pipeline.py           poll S3 for Nextflow progress; compute EC2 cost
   agent.py              Bedrock Sonnet synthesis of metagenomics results
   worker_script.py      generates the cloud-init bash script for each EC2 instance
+                        (pulls SRA files directly from RODA, no staging)
   static/index.html     Alpine.js live dashboard (no build step)
 
 tests/                  pytest suite (no AWS calls; uses fakes)
@@ -107,10 +98,19 @@ Makefile                shortcuts for all common operations
 |-----------|------|
 | 8× c7g.4xlarge × 20 min | ~$1.74 |
 | Bedrock Sonnet synthesis | ~$0.003 |
-| S3 storage (100 SRA files, ~10 GB) | ~$0.24/month while staged |
+| S3 results storage (~5 MB of JSON) | negligible |
 | AMI bake (one-time) | ~$1-2 |
+| HMP data (from RODA) | **$0** — public dataset, no egress within us-east-1 |
 
 **Total per demo run: ~$1.74.**
+
+## Why read from RODA directly?
+
+[SRA Open Data](https://registry.opendata.aws/ncbi-sra/) (`s3://sra-pub-run-odp/`) is an
+AWS public dataset hosted in `us-east-1`.  EC2 instances in the same region read it at
+full S3 bandwidth with no data transfer fees.  There is no reason to copy 10 GB of SRA
+files into your own bucket first — that would waste time, storage cost, and defeat the
+purpose of a public data commons.
 
 ## Why k2_pluspf_16GB?
 
@@ -118,9 +118,6 @@ Kraken2's `k2_pluspf` database includes bacteria, archaea, viruses, fungi, and p
 everything relevant for human microbiome profiling.  At 11.9 GB compressed → 16 GB
 uncompressed, it fits entirely in the 32 GB RAM of a `c7g.4xlarge`, enabling in-memory
 classification which is the throughput bottleneck for Kraken2.
-
-The full standard database (75 GB) adds plant genomes and other taxa irrelevant to HMP
-samples, with no benefit for this use case.
 
 ## Why ARM64 / Graviton3?
 

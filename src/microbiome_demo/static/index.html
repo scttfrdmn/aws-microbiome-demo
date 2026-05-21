@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Microbiome Demo — Live HMP Analysis</title>
+  <title>HMP Microbiome — Live AWS Analysis</title>
 
   <!-- Atkinson Hyperlegible — matches the PCSK9 demo -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -257,6 +257,9 @@
   <div>
     <h1>HMP Microbiome Analysis</h1>
     <div class="sub">100 samples · 3 body sites · 8× Graviton3 · nf-core/taxprofiler</div>
+    <div class="sub" style="color: var(--teal); font-size: 0.75rem; margin-top: 2px;">
+      Data: <strong>NCBI SRA Open Data (RODA)</strong> — read directly, nothing copied, $0 data cost
+    </div>
   </div>
   <template x-if="status === 'running'">
     <span class="badge badge-amber">● Running</span>
@@ -292,8 +295,12 @@
 
       <template x-if="events.length === 0 && status === 'idle'">
         <div style="color: var(--muted); font-size: 0.88rem; padding: 20px 0;">
-          Press <strong>Start Analysis</strong> to launch 8× c7g.4xlarge Graviton3 instances and
-          profile 100 Human Microbiome Project samples across 3 body sites.
+          Press <strong>Start Analysis</strong> to launch 8× c7g.4xlarge Graviton3 instances
+          and profile 100 Human Microbiome Project samples across 3 body sites.<br><br>
+          Workers read HMP data <strong>directly from
+          <a href="https://registry.opendata.aws/ncbi-sra/" target="_blank"
+             style="color: var(--teal)">RODA</a></strong>
+          (s3://sra-pub-run-odp/) — no staging, no copying, $0 data cost.
         </div>
       </template>
     </div>
