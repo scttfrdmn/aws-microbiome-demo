@@ -205,16 +205,19 @@ def _run_pipeline() -> None:
     try:
         emit({"type": "phase", "label": "Preparing sample slices…"})
 
-        # Split the samplesheet into per-instance slices and upload to S3
-        from corpus_prep import HMP_ACCESSIONS  # type: ignore[import]
+        # HMP accession list lives here in the app — no corpus staging needed.
+        # Workers pull SRA files directly from RODA (s3://sra-pub-run-odp/)
+        # using --no-sign-request; data never enters your bucket.
+        from .accessions import HMP_ACCESSIONS
 
         sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
         accessions = HMP_ACCESSIONS[:sample_count]
 
-        slice_keys = worker_script.write_samplesheet_slices(cfg, accessions)
-        emit({"type": "phase", "label": f"Uploaded {len(slice_keys)} sample slice(s) to S3"})
+        # Upload tiny SRR list JSON files to S3 (accession numbers only, ~1 KB each).
+        slice_keys = worker_script.write_srr_slices(cfg, accessions)
+        emit({"type": "phase", "label": f"Uploaded {len(slice_keys)} SRR slice(s) to S3"})
 
-        # Launch one worker per slice
+        # Launch one worker per slice — each pulls its SRRs directly from RODA.
         start_time = time.time()
         workers: list[spawn.WorkerGroup] = []
         for _i, skey in enumerate(slice_keys):

@@ -6,9 +6,11 @@ Run this after the talk to clean up billable resources.
 
 What this script deletes (and approximate ongoing costs if left running):
   - Spawn worker instances (stop any still running)     -- ~$0.65/hr each
-  - S3 corpus bucket (SRA files + samplesheets)        -- ~$0.023/GB-month
-  - S3 results bucket contents                         -- ~$0.023/GB-month
+  - S3 results bucket (SRR slice lists + result JSONs) -- negligible storage
   - The AMI bake instance (if still running)           -- ~$0.65/hr
+
+Note: there is NO corpus bucket to delete.  HMP data lives on RODA and
+is never copied to your account — workers read it directly.
 
 What this script does NOT delete:
   - The AMI itself (AMIs don't incur hourly charges; EBS snapshots are
@@ -100,8 +102,9 @@ if __name__ == "__main__":
     print("1/3  Stopping spawn worker instances…")
     _stop_spawn_workers()
 
-    # 2. Delete S3 corpus bucket (SRA files)
-    print(f"\n2/3  Deleting S3 corpus bucket s3://{cfg.BUCKET}…")
+    # 2. Delete S3 results bucket (SRR slice lists + Kraken2 result JSONs).
+    # The HMP data itself lives on RODA and was never in this bucket.
+    print(f"\n2/3  Deleting S3 results bucket s3://{cfg.BUCKET}…")
     _try(f"S3 bucket {cfg.BUCKET}", lambda: _delete_bucket(cfg.BUCKET))
 
     # 3. Note about the AMI

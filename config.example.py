@@ -9,18 +9,15 @@ config.py is git-ignored. Never commit real account IDs or bucket names.
 # --- account / region -------------------------------------------------------
 REGION = "us-east-1"  # must match your spawn region
 ACCOUNT_ID = "000000000000"  # your 12-digit AWS account ID
-BUCKET = "your-microbiome-demo-bucket"  # S3 bucket for corpus + results
+BUCKET = "your-microbiome-demo-bucket"  # S3 bucket for results only (not HMP data)
 
-# --- corpus -----------------------------------------------------------------
+# --- samples ----------------------------------------------------------------
 # How many HMP WGS samples to use.  100 gives the full story; 20 works for
-# a quick rehearsal run.  The corpus_prep.py script selects this many
-# samples across three body sites (stool, buccal_mucosa, anterior_nares).
+# a quick rehearsal run.  Accessions are split evenly across
+# three body sites (stool, buccal_mucosa, anterior_nares).
+# HMP data is read DIRECTLY from RODA (s3://sra-pub-run-odp/) at runtime —
+# no staging into your bucket needed.
 SAMPLE_COUNT = 100
-
-# SRA accession list for the Human Microbiome Project WGS samples.
-# corpus_prep.py populates this automatically; you can also override with your
-# own list of SRR accessions.
-SRA_ACCESSIONS_FILE = "hmp_accessions.txt"  # created by corpus_prep.py
 
 # --- AMI / instance ---------------------------------------------------------
 # Filled in by build_ami.py after the AMI is baked.
