@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Microbiome Demo — Live HMP Analysis</title>
+
+  <!-- Atkinson Hyperlegible — matches the PCSK9 demo -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
+
+  <!-- Alpine.js (no build step) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --green:    #3fb950;
+      --blue:     #58a6ff;
+      --amber:    #d29922;
+      --red:      #f85149;
+      --purple:   #a371f7;
+      --teal:     #39d353;
+      --font:     "Atkinson Hyperlegible", system-ui, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    header {
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: var(--surface);
+    }
+    header h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: 0.01em; }
+    header .sub { font-size: 0.82rem; color: var(--muted); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge-green  { background: rgba(63,185,80,.15);  color: var(--green);  }
+    .badge-amber  { background: rgba(210,153,34,.15); color: var(--amber);  }
+    .badge-red    { background: rgba(248,81,73,.15);  color: var(--red);    }
+    .badge-blue   { background: rgba(88,166,255,.15); color: var(--blue);   }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 0;
+      overflow: hidden;
+      height: calc(100vh - 60px);
+    }
+
+    /* ── Left column — live feed ─────────────────────────────────── */
+    .feed-col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+    .feed-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface);
+    }
+    .feed-header h2 { font-size: 0.85rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .feed-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      scroll-behavior: smooth;
+    }
+
+    .event-row {
+      display: flex;
+      gap: 10px;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(48,54,61,.5);
+      opacity: 0;
+      animation: fadein .3s ease forwards;
+    }
+    @keyframes fadein { to { opacity: 1; } }
+
+    .event-time { color: var(--muted); font-size: 0.78rem; white-space: nowrap; padding-top: 2px; min-width: 48px; }
+    .event-body { flex: 1; }
+    .event-type { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    .event-text { font-size: 0.9rem; color: var(--text); }
+
+    /* ── Start button / status ───────────────────────────────────── */
+    .start-area {
+      padding: 20px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .btn-start {
+      width: 100%;
+      padding: 12px 24px;
+      background: var(--green);
+      color: #0d1117;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--font);
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .btn-start:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-start:hover:not(:disabled) { opacity: .85; }
+
+    .phase-line {
+      margin-top: 10px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      min-height: 1.4em;
+    }
+
+    /* ── Progress bar ────────────────────────────────────────────── */
+    .progress-wrap {
+      margin-top: 12px;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--border);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--green);
+      transition: width .4s ease;
+      border-radius: 3px;
+    }
+    .progress-label {
+      margin-top: 4px;
+      font-size: 0.78rem;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    /* ── Right panel ─────────────────────────────────────────────── */
+    .panel-col {
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 0;
+    }
+
+    .panel-section {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 18px;
+    }
+    .panel-section h3 {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* Cost meter */
+    .cost-big {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--green);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+    }
+    .cost-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* Instance grid */
+    .instance-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .instance-dot {
+      aspect-ratio: 1;
+      border-radius: 4px;
+      background: var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.65rem;
+      color: var(--muted);
+      transition: background .3s, color .3s;
+    }
+    .instance-dot.running  { background: rgba(210,153,34,.2); color: var(--amber); }
+    .instance-dot.complete { background: rgba(63,185,80,.2);  color: var(--green); }
+    .instance-dot.failed   { background: rgba(248,81,73,.2);  color: var(--red);   }
+
+    /* Species table */
+    .species-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .species-table th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      padding: 3px 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .species-table td { padding: 4px 4px; border-bottom: 1px solid rgba(48,54,61,.4); }
+    .site-label { color: var(--blue); font-weight: 600; }
+
+    /* Insight */
+    .insight-text {
+      font-size: 0.88rem;
+      line-height: 1.65;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    /* Receipt */
+    .receipt-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .receipt-table td { padding: 4px 0; }
+    .receipt-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    .receipt-total { border-top: 1px solid var(--border); font-weight: 700; }
+  </style>
+</head>
+
+<body x-data="demo()" x-init="init()">
+
+<!-- ── Header ─────────────────────────────────────────────────────── -->
+<header>
+  <div>
+    <h1>HMP Microbiome Analysis</h1>
+    <div class="sub">100 samples · 3 body sites · 8× Graviton3 · nf-core/taxprofiler</div>
+  </div>
+  <template x-if="status === 'running'">
+    <span class="badge badge-amber">● Running</span>
+  </template>
+  <template x-if="status === 'complete'">
+    <span class="badge badge-green">✓ Complete</span>
+  </template>
+  <template x-if="status === 'error'">
+    <span class="badge badge-red">✗ Error</span>
+  </template>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- Left column: live event feed + start button -->
+  <div class="feed-col">
+    <div class="feed-header">
+      <h2>Live Pipeline Feed</h2>
+      <span class="badge badge-blue" x-show="events.length > 0" x-text="events.length + ' events'"></span>
+    </div>
+
+    <div class="feed-scroll" x-ref="feedScroll">
+      <template x-for="ev in events" :key="ev.id">
+        <div class="event-row">
+          <div class="event-time" x-text="ev.time"></div>
+          <div class="event-body">
+            <div class="event-type" x-text="ev.label"></div>
+            <div class="event-text" x-html="ev.html"></div>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="events.length === 0 && status === 'idle'">
+        <div style="color: var(--muted); font-size: 0.88rem; padding: 20px 0;">
+          Press <strong>Start Analysis</strong> to launch 8× c7g.4xlarge Graviton3 instances and
+          profile 100 Human Microbiome Project samples across 3 body sites.
+        </div>
+      </template>
+    </div>
+
+    <div class="start-area">
+      <button class="btn-start"
+              :disabled="status === 'running'"
+              @click="startRun()">
+        <span x-show="status !== 'running'">▶  Start Analysis</span>
+        <span x-show="status === 'running'">● Running…</span>
+      </button>
+
+      <div class="phase-line" x-text="phase"></div>
+
+      <template x-if="progress">
+        <div>
+          <div class="progress-wrap">
+            <div class="progress-fill"
+                 :style="`width: ${(progress.completed / progress.total * 100).toFixed(1)}%`"></div>
+          </div>
+          <div class="progress-label"
+               x-text="`${progress.completed} / ${progress.total} samples`"></div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Right panel: cost, instances, species, insight -->
+  <div class="panel-col">
+
+    <!-- Cost meter -->
+    <div class="panel-section">
+      <h3>Live Cost</h3>
+      <div class="cost-big" x-text="`$${ec2Cost.toFixed(6)}`"></div>
+      <div class="cost-sub" x-text="costSub"></div>
+    </div>
+
+    <!-- Elapsed time -->
+    <div class="panel-section" x-show="elapsedSec > 0">
+      <h3>Elapsed</h3>
+      <div style="font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums;"
+           x-text="fmtElapsed(elapsedSec)"></div>
+      <div style="font-size: 0.78rem; color: var(--muted);" x-text="elapsedSub"></div>
+    </div>
+
+    <!-- Worker instances -->
+    <div class="panel-section" x-show="instanceIds.length > 0">
+      <h3>Worker Instances (<span x-text="instanceIds.length"></span>× <span x-text="instanceType"></span>)</h3>
+      <div class="instance-grid">
+        <template x-for="(iid, idx) in instanceIds" :key="iid">
+          <div class="instance-dot"
+               :class="instanceStatuses[iid] || 'idle'"
+               :title="iid">
+            <span x-text="idx + 1"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Species preview -->
+    <div class="panel-section" x-show="Object.keys(speciesCounts).length > 0">
+      <h3>Top Species (live)</h3>
+      <table class="species-table">
+        <thead>
+          <tr><th>Body Site</th><th>Top Taxa</th></tr>
+        </thead>
+        <tbody>
+          <template x-for="[site, taxa] in Object.entries(speciesCounts)" :key="site">
+            <tr>
+              <td class="site-label" x-text="fmtSite(site)"></td>
+              <td>
+                <template x-for="t in taxa.slice(0, 2)" :key="t">
+                  <div style="font-size: 0.78rem;" x-text="t"></div>
+                </template>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Bedrock insight -->
+    <div class="panel-section" x-show="insight">
+      <h3>
+        Claude Insight
+        <span class="badge badge-blue" style="margin-left: 6px;">Bedrock Sonnet</span>
+      </h3>
+      <div class="insight-text" x-text="insight"></div>
+    </div>
+
+    <!-- Receipt -->
+    <div class="panel-section" x-show="receipt.length > 0">
+      <h3>Receipt</h3>
+      <table class="receipt-table">
+        <template x-for="row in receipt" :key="row.label">
+          <tr :class="row.total ? 'receipt-total' : ''">
+            <td x-text="row.label"></td>
+            <td x-text="`$${row.usd.toFixed(6)}`"></td>
+          </tr>
+        </template>
+      </table>
+    </div>
+
+  </div><!-- /panel-col -->
+</main>
+
+<!-- ── Alpine component ───────────────────────────────────────────── -->
+<script>
+function demo() {
+  return {
+    // state
+    status: 'idle',
+    phase: '',
+    progress: null,
+    ec2Cost: 0,
+    bedrockCost: 0,
+    elapsedSec: 0,
+    instanceIds: [],
+    instanceType: 'c7g.4xlarge',
+    instanceStatuses: {},
+    speciesCounts: {},
+    insight: '',
+    receipt: [],
+    events: [],
+    _evId: 0,
+    _ticker: null,
+    _ws: null,
+
+    get costSub() {
+      const instances = this.instanceIds.length || 8;
+      const rate = 0.6528;
+      return `${instances}× c7g.4xlarge @ $${rate}/hr`;
+    },
+    get elapsedSub() {
+      if (!this.progress) return '';
+      const c = this.progress.completed || 0;
+      const t = this.progress.total || 1;
+      if (c === 0) return 'waiting for first sample…';
+      const secPerSample = this.elapsedSec / c;
+      const remaining = Math.max(0, (t - c) * secPerSample);
+      return `~${this.fmtElapsed(remaining)} remaining`;
+    },
+
+    init() {
+      this._connectWs();
+    },
+
+    _connectWs() {
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      this._ws = ws;
+
+      ws.onmessage = (e) => {
+        const ev = JSON.parse(e.data);
+        this._handle(ev);
+      };
+
+      ws.onclose = () => {
+        // Reconnect after 3 s if not deliberately closed
+        if (this.status !== 'complete') {
+          setTimeout(() => this._connectWs(), 3000);
+        }
+      };
+    },
+
+    _handle(ev) {
+      const now = new Date().toLocaleTimeString('en-US', {hour12: false, timeStyle: 'medium'});
+
+      switch (ev.type) {
+        case 'phase':
+          this.phase = ev.label;
+          this._addEvent('Phase', ev.label, now);
+          break;
+
+        case 'workers_launched':
+          this.instanceIds = ev.instance_ids || [];
+          this.status = 'running';
+          if (!this._ticker) this._startTicker();
+          this._addEvent('Launched', `${ev.count} worker instances`, now);
+          break;
+
+        case 'progress':
+          this.progress = {completed: ev.completed, total: ev.total};
+          this.ec2Cost = ev.ec2_cost_usd || 0;
+          this.elapsedSec = ev.elapsed_seconds || 0;
+          this.instanceStatuses = {};
+          if (ev.instance_statuses) {
+            this.instanceStatuses = ev.instance_statuses;
+          }
+          if (ev.species_counts) {
+            this.speciesCounts = ev.species_counts;
+          }
+          break;
+
+        case 'model':
+          if (ev.state === 'start') {
+            this._addEvent('Model', `${ev.label} — started`, now);
+          } else if (ev.state === 'done' && ev.cost != null) {
+            this.bedrockCost += ev.cost;
+            this._addEvent('Model', `${ev.label} — done · $${ev.cost.toFixed(6)}`, now);
+          }
+          break;
+
+        case 'insight':
+          this.insight = ev.text;
+          this.status = 'complete';
+          this._stopTicker();
+          this._buildReceipt();
+          this._addEvent('Insight', ev.text.slice(0, 120) + (ev.text.length > 120 ? '…' : ''), now);
+          break;
+
+        case 'cost':
+          break;
+
+        case 'done':
+          this.status = 'complete';
+          this._stopTicker();
+          this._buildReceipt();
+          this._addEvent('Done', '✓ Run complete', now);
+          break;
+
+        case 'error':
+          this.status = 'error';
+          this._stopTicker();
+          this._addEvent('Error', `<span style="color:var(--red)">${ev.message}</span>`, now);
+          break;
+
+        case 'heartbeat':
+          break;
+
+        default:
+          break;
+      }
+
+      this._scrollToBottom();
+    },
+
+    _addEvent(label, text, time) {
+      this.events = [...this.events, {
+        id: this._evId++,
+        time,
+        label,
+        html: text,
+      }];
+    },
+
+    _startTicker() {
+      this._ticker = setInterval(() => {
+        if (this.status === 'running' && this.progress) {
+          this.elapsedSec += 1;
+          // Approximate cost tick between server updates
+          const instances = this.instanceIds.length || 8;
+          this.ec2Cost += instances * 0.6528 / 3600;
+        }
+      }, 1000);
+    },
+
+    _stopTicker() {
+      if (this._ticker) {
+        clearInterval(this._ticker);
+        this._ticker = null;
+      }
+    },
+
+    _buildReceipt() {
+      const rows = [
+        {label: `EC2 (${this.instanceIds.length || 8}× c7g.4xlarge, ${this.fmtElapsed(this.elapsedSec)})`, usd: this.ec2Cost},
+      ];
+      if (this.bedrockCost > 0) {
+        rows.push({label: 'Bedrock (Claude Sonnet synthesis)', usd: this.bedrockCost});
+      }
+      const total = rows.reduce((s, r) => s + r.usd, 0);
+      rows.push({label: 'Total', usd: total, total: true});
+      this.receipt = rows;
+    },
+
+    async startRun() {
+      this.status = 'running';
+      this.phase = 'Starting…';
+      this.events = [];
+      this.ec2Cost = 0;
+      this.bedrockCost = 0;
+      this.elapsedSec = 0;
+      this.progress = null;
+      this.instanceIds = [];
+      this.instanceStatuses = {};
+      this.speciesCounts = {};
+      this.insight = '';
+      this.receipt = [];
+
+      try {
+        const resp = await fetch('/api/start', {method: 'POST'});
+        const data = await resp.json();
+        if (data.status === 'error') {
+          this.status = 'error';
+          this.phase = data.message || 'Unknown error';
+        }
+      } catch (e) {
+        this.status = 'error';
+        this.phase = 'Failed to reach server: ' + e.message;
+      }
+    },
+
+    fmtElapsed(sec) {
+      const s = Math.floor(sec);
+      const m = Math.floor(s / 60);
+      const h = Math.floor(m / 60);
+      if (h > 0) return `${h}h ${m % 60}m`;
+      if (m > 0) return `${m}m ${s % 60}s`;
+      return `${s}s`;
+    },
+
+    fmtSite(site) {
+      const map = {
+        stool: 'Gut (stool)',
+        buccal_mucosa: 'Oral (buccal)',
+        anterior_nares: 'Nasal',
+      };
+      return map[site] || site.replace('_', ' ');
+    },
+
+    _scrollToBottom() {
+      const el = this.$refs.feedScroll;
+      if (!el) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          el.scrollTop = Number.MAX_SAFE_INTEGER;
+        });
+      });
+    },
+  };
+}
+</script>
+
+</body>
+</html>
