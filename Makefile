@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   uv       (pip install uv  or  brew install uv)
-#   spawn    (brew install scttfrdmn/tap/spawn)
+#   spawn    (brew install spore-host/tap/spawn)
 #   AWS credentials configured for the aws profile
 #
 # Typical flow:

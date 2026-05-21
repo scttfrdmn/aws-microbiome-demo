@@ -28,7 +28,7 @@ Re-running safely:
   AMI details and exits without creating a duplicate.
 
 Requires:
-  - spawn CLI installed (brew install scttfrdmn/tap/spawn)
+  - spawn CLI installed (brew install spore-host/tap/spawn)
   - AWS credentials with EC2 + IAM permissions
   - ~$1-2 in EC2 costs for the bake instance (auto-terminates when done)
 """

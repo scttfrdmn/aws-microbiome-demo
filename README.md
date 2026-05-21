@@ -1,5 +1,11 @@
 # HMP Microbiome Demo — Live AWS Metagenomics Analysis
 
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![AWS Graviton3](https://img.shields.io/badge/AWS-Graviton3-orange.svg)](https://aws.amazon.com/ec2/graviton/)
+[![spawn](https://img.shields.io/badge/powered%20by-spawn-5c5cff.svg)](https://spore.host)
+
 A five-minute live demo that runs **real** AWS compute against **real** Human Microbiome
 Project data and shows every dollar as it happens.
 
@@ -15,7 +21,7 @@ Project data and shows every dollar as it happens.
 ## Prerequisites
 
 ```bash
-brew install scttfrdmn/tap/spawn   # the spawn CLI (auto-provisions EC2)
+brew install spore-host/tap/spawn   # the spawn CLI (auto-provisions EC2)
 brew install uv                    # fast Python package manager
 ```
 
