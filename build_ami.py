@@ -65,13 +65,15 @@ dnf install -y \\
     htop
 
 # --- SRA Toolkit  -----------------------------------------------------------
-# Needed to convert .sra files to FASTQ inside the pipeline.
+# ARM64 (aarch64) build — the AMI is Graviton3, not x86_64.
+# fasterq-dump converts SRA files to FASTQ on the task instances.
 cd /tmp
-wget -q https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-centos_linux64.tar.gz
-tar -xzf sratoolkit.current-centos_linux64.tar.gz
+wget -q https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-centos_linux64-aarch64.tar.gz
+tar -xzf sratoolkit.current-centos_linux64-aarch64.tar.gz
 cp sratoolkit.*/bin/fasterq-dump /usr/local/bin/
 cp sratoolkit.*/bin/prefetch      /usr/local/bin/
 cp sratoolkit.*/bin/vdb-config    /usr/local/bin/
+fasterq-dump --version
 
 # --- Nextflow ---------------------------------------------------------------
 mkdir -p /usr/local/bin
@@ -133,15 +135,22 @@ NF_SPAWN_VERSION="0.1.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
 mkdir -p /opt/nf-spawn "${NF_PLUGIN_DIR}"
 cd /opt/nf-spawn
+# Try the pinned tag; fall back to main if the tag hasn't been pushed yet.
 git clone --depth 1 --branch "v${NF_SPAWN_VERSION}" \
-    https://github.com/spore-host/nf-spawn.git .
+    https://github.com/spore-host/nf-spawn.git . 2>/dev/null \
+    || git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
 ./gradlew jar 2>&1
-# pf4j plugin discovery: directory name must be {id}-{version}
+# pf4j plugin discovery requires directory name == {id}-{version}.
+# If building from main the JAR may have a different version suffix; normalise it.
+BUILT_JAR=$(ls build/libs/nf-spawn-*.jar 2>/dev/null | head -1)
+if [ -z "${BUILT_JAR}" ]; then
+    echo "ERROR: nf-spawn JAR not found after build — check Gradle output above"
+    exit 1
+fi
 PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
 mkdir -p "${PLUGIN_DEST}"
-cp "build/libs/nf-spawn-${NF_SPAWN_VERSION}.jar" \
-    "${PLUGIN_DEST}/nf-spawn-${NF_SPAWN_VERSION}.jar"
-echo "nf-spawn ${NF_SPAWN_VERSION} installed: ${PLUGIN_DEST}"
+cp "${BUILT_JAR}" "${PLUGIN_DEST}/nf-spawn-${NF_SPAWN_VERSION}.jar"
+echo "nf-spawn installed: ${PLUGIN_DEST} (from $(basename ${BUILT_JAR}))"
 
 # --- Nextflow pipeline cache ------------------------------------------------
 # Pre-download the nf-core/taxprofiler pipeline so demo runs don't need
@@ -304,4 +313,4 @@ if __name__ == "__main__":
 
     print("\nDone.  Paste into config.py:")
     print(f'  AMI_ID = "{ami_id}"')
-    print("\nNext step: python corpus_prep.py")
+    print("\nNext step: make demo")

@@ -1,1 +1,1 @@
-"""microbiome_demo — live AWS metagenomics pipeline dashboard."""
+"""microbiome_demo — live AWS microbiome analysis demo."""

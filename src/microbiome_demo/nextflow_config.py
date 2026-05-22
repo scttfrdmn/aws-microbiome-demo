@@ -78,6 +78,47 @@ workDir = 's3://{bucket}/work/{job_name}/'
 // Publish final results to a separate prefix (not the ephemeral work dir).
 params.outdir = 's3://{bucket}/results/{job_name}/'
 
+// Post-process hook: after each KRAKEN2_CLASSIFY task completes, convert the
+// Kraken2 report to the JSON format that pipeline._sample_species() reads.
+// The script runs on the task instance before it terminates.
+process.afterScript = '''
+if [ -f "*.report.txt" ]; then
+  python3 - << 'PYEOF'
+import glob, json, os, re, boto3
+
+bucket   = os.environ.get("NXF_WORK_BUCKET", "").lstrip("s3://").split("/")[0]
+job_name = os.environ.get("NXF_JOB_NAME", "microbiome-demo")
+
+def parse_report(path):
+    species = []
+    with open(path) as f:
+        for line in f:
+            fields = line.strip().split("\\t")
+            if len(fields) >= 6 and fields[3] == "S" and float(fields[0]) > 0.1:
+                species.append({"name": fields[5].strip(),
+                                "pct":   float(fields[0]),
+                                "reads": int(fields[1])})
+    return sorted(species, key=lambda x: x["pct"], reverse=True)
+
+for report in glob.glob("*.report.txt"):
+    m = re.search(r"(SRR\\d+)", report)
+    if not m or not bucket:
+        continue
+    srr = m.group(1)
+    # Body site is encoded in the sample name passed by Nextflow
+    body_site = os.environ.get("NXF_TASK_NAME", "unknown").split("_", 1)[-1]
+    data = {"srr": srr, "body_site": body_site,
+            "top_species": [s["name"] for s in parse_report(report)[:10]],
+            "species_detail": parse_report(report)[:20]}
+    boto3.client("s3").put_object(
+        Bucket=bucket,
+        Key=f"results/{job_name}/kraken2/{srr}.json",
+        Body=json.dumps(data)
+    )
+PYEOF
+fi
+'''
+
 // Trace file written to S3 — the dashboard polls this for live progress.
 trace {{
     enabled   = true

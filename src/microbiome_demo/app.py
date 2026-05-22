@@ -271,13 +271,14 @@ def _run_pipeline() -> None:
 
 
 def _head_cfg(base_cfg):
-    """Return a config-like object for the head instance (t4g.small)."""
+    """Return a config-like namespace for the head instance."""
     import types
 
     hc = types.SimpleNamespace(
         **{k: getattr(base_cfg, k) for k in dir(base_cfg) if not k.startswith("_")}
     )
-    hc.INSTANCE_TYPE = "t4g.small"
+    # HEAD_INSTANCE_TYPE from config.py; fall back to t4g.small
+    hc.INSTANCE_TYPE = getattr(base_cfg, "HEAD_INSTANCE_TYPE", "t4g.small")
     hc.INSTANCE_COUNT = 1
     return hc
 
