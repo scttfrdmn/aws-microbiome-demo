@@ -126,30 +126,22 @@ fi
 spawn --version
 
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
-# Builds the JAR from source and installs it into the shared Nextflow plugin
-# directory so all users on this AMI have the executor available.
-# Requires Java 21 (installed above) and Gradle (bundled in the repo as gradlew).
-mkdir -p /opt/nf-spawn
-cd /opt/nf-spawn
-git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
-# Build the plugin JAR
-./gradlew jar 2>&1
-# Nextflow looks for plugins in NXF_HOME/plugins/{name}-{version}/
-# We install into the shared NXF_HOME so all runs on this AMI pick it up.
+# Clones the pinned v0.1.0 tag, builds the JAR, and installs it into the
+# shared NXF_HOME/plugins/ directory so all Nextflow runs on this AMI find it.
+# nextflow.config references it as: plugins { id 'nf-spawn@0.1.0' }
+NF_SPAWN_VERSION="0.1.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
-mkdir -p "${NF_PLUGIN_DIR}"
-# The JAR name and plugin ID come from build.gradle; copy with a stable name
-# so nextflow.config can reference it as 'nf-spawn' without a version pin.
-SPAWN_JAR=$(ls build/libs/nf-spawn-*.jar 2>/dev/null | head -1)
-if [ -z "${SPAWN_JAR}" ]; then
-    echo "ERROR: nf-spawn JAR not found after build"
-    exit 1
-fi
-PLUGIN_VERSION=$(basename "${SPAWN_JAR}" | sed 's/nf-spawn-//;s/\.jar//')
-PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${PLUGIN_VERSION}"
-mkdir -p "${PLUGIN_DEST}/classes"
-cp "${SPAWN_JAR}" "${PLUGIN_DEST}/nf-spawn-${PLUGIN_VERSION}.jar"
-echo "nf-spawn plugin installed: ${PLUGIN_DEST}"
+mkdir -p /opt/nf-spawn "${NF_PLUGIN_DIR}"
+cd /opt/nf-spawn
+git clone --depth 1 --branch "v${NF_SPAWN_VERSION}" \
+    https://github.com/spore-host/nf-spawn.git .
+./gradlew jar 2>&1
+# pf4j plugin discovery: directory name must be {id}-{version}
+PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
+mkdir -p "${PLUGIN_DEST}"
+cp "build/libs/nf-spawn-${NF_SPAWN_VERSION}.jar" \
+    "${PLUGIN_DEST}/nf-spawn-${NF_SPAWN_VERSION}.jar"
+echo "nf-spawn ${NF_SPAWN_VERSION} installed: ${PLUGIN_DEST}"
 
 # --- Nextflow pipeline cache ------------------------------------------------
 # Pre-download the nf-core/taxprofiler pipeline so demo runs don't need
