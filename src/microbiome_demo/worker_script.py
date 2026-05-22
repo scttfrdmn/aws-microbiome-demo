@@ -160,97 +160,137 @@ bucket    = "@@BUCKET@@"
 job_name  = "@@JOB_NAME@@"
 trace_key = f"results/{job_name}/trace.tsv"
 prog_key  = f"results/{job_name}/progress.json"
+reports_prefix = f"results/{job_name}/kraken2_reports/"
+kraken_json_prefix = f"results/{job_name}/kraken2/"
 nf_pid    = int(sys.argv[1])
 
+# Load body_site map from the SRR list so we can annotate Kraken2 results.
+with open("/tmp/nf-head/srr_list.json") as f:
+    srr_list = json.load(f)
+body_site_map = {item["srr"]: item["body_site"] for item in srr_list}
+
 def read_trace():
-    # Parse the Nextflow trace TSV and return per-task stats.
+    # Parse the Nextflow trace TSV and return list of task dicts.
     try:
         resp = s3.get_object(Bucket=bucket, Key=trace_key)
         lines = resp["Body"].read().decode().splitlines()
     except Exception:
         return []
-
     if len(lines) < 2:
         return []
-
     header = lines[0].split("\t")
-    tasks  = []
-    for line in lines[1:]:
-        fields = dict(zip(header, line.split("\t")))
-        tasks.append(fields)
-    return tasks
+    return [dict(zip(header, line.split("\t"))) for line in lines[1:] if line.strip()]
 
 
 def parse_rchar(s):
-    # Parse rchar field (bytes read) from trace — handles 'N/A' and plain integers.
+    # Bytes read field from trace (plain integer or 'N/A').
     if not s or s in ("-", "N/A", ""):
         return 0
-    # Nextflow reports bytes as plain integers in trace
     try:
         return int(s)
     except ValueError:
         return 0
 
 
-def is_sra_fetch_task(name):
-    # True if this task is the SRA fetch/conversion step.
-    return any(k in name.lower() for k in ("fasterq", "sratools", "fetchngs", "sra"))
+def is_sra_task(name):
+    return any(k in name.lower() for k in ("fasterq", "sratools", "fetchngs", "sra_to"))
 
 
-started_at = time.time()
+def parse_kraken2_report(body):
+    # Parse a Kraken2 report text and return sorted species list.
+    species = []
+    for line in body.decode().splitlines():
+        fields = line.strip().split("\t")
+        if len(fields) >= 6 and fields[3] == "S":
+            try:
+                pct = float(fields[0])
+                if pct > 0.1:
+                    species.append({"name": fields[5].strip(),
+                                    "pct": pct, "reads": int(fields[1])})
+            except (ValueError, IndexError):
+                continue
+    return sorted(species, key=lambda x: x["pct"], reverse=True)
+
+
+def process_new_reports(already_done):
+    # List published Kraken2 report files; parse and upload JSON for new ones.
+    paginator = s3.get_paginator("list_objects_v2")
+    new_done = set(already_done)
+    for page in paginator.paginate(Bucket=bucket, Prefix=reports_prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key in already_done or not key.endswith(".report.txt"):
+                continue
+            m = re.search(r"(SRR\d+)", key)
+            if not m:
+                continue
+            srr = m.group(1)
+            try:
+                body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+                sp = parse_kraken2_report(body)
+                data = {
+                    "srr": srr,
+                    "body_site": body_site_map.get(srr, "unknown"),
+                    "top_species": [s["name"] for s in sp[:10]],
+                    "species_detail": sp[:20],
+                }
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=f"{kraken_json_prefix}{srr}.json",
+                    Body=json.dumps(data),
+                )
+                new_done.add(key)
+            except Exception:
+                pass
+    return new_done
+
+
+started_at  = time.time()
+reports_done: set = set()
 
 while True:
     time.sleep(15)
 
-    # Check if Nextflow has exited
     nf_running = os.path.exists(f"/proc/{nf_pid}")
-
-    tasks = read_trace()
+    tasks      = read_trace()
 
     running = sum(1 for t in tasks if t.get("status") == "RUNNING")
     done    = sum(1 for t in tasks if t.get("status") == "COMPLETED")
     failed  = sum(1 for t in tasks if t.get("status") in ("FAILED", "ABORTED"))
     total   = len(tasks)
 
-    # Data volume: rchar for SRA fetch tasks = bytes read from RODA
+    # Data volumes from trace rchar/wchar fields
     roda_bytes = sum(
         parse_rchar(t.get("rchar", "0"))
-        for t in tasks
-        if is_sra_fetch_task(t.get("name", ""))
+        for t in tasks if is_sra_task(t.get("name", ""))
     )
-    # wchar for SRA fetch tasks ≈ FASTQ bytes written
     fastq_bytes = sum(
         parse_rchar(t.get("wchar", "0"))
-        for t in tasks
-        if is_sra_fetch_task(t.get("name", ""))
+        for t in tasks if is_sra_task(t.get("name", ""))
     )
-    # rchar for classifier tasks = FASTQ bytes read for analysis
     analysis_bytes = sum(
         parse_rchar(t.get("rchar", "0"))
         for t in tasks
-        if any(k in t.get("name", "").lower()
-               for k in ("kraken2", "metaphlan", "bracken"))
+        if any(k in t.get("name", "").lower() for k in ("kraken2", "metaphlan"))
     )
+
+    # Convert any newly published Kraken2 reports → per-sample JSON
+    reports_done = process_new_reports(reports_done)
 
     progress = {
-        "status":          "complete" if not nf_running else "running",
-        "started_at":      started_at,
-        "elapsed_seconds": time.time() - started_at,
-        "tasks_total":     total,
-        "tasks_running":   running,
-        "tasks_done":      done,
-        "tasks_failed":    failed,
-        # Data volumes
-        "roda_bytes_read":    roda_bytes,    # read from RODA
-        "fastq_bytes":        fastq_bytes,   # FASTQ after SRA conversion
-        "analysis_bytes_read": analysis_bytes,  # read by classifiers
+        "status":             "complete" if not nf_running else "running",
+        "started_at":         started_at,
+        "elapsed_seconds":    time.time() - started_at,
+        "tasks_total":        total,
+        "tasks_running":      running,
+        "tasks_done":         done,
+        "tasks_failed":       failed,
+        "roda_bytes_read":    roda_bytes,
+        "fastq_bytes":        fastq_bytes,
+        "analysis_bytes_read": analysis_bytes,
     }
 
-    s3.put_object(
-        Bucket=bucket,
-        Key=prog_key,
-        Body=json.dumps(progress),
-    )
+    s3.put_object(Bucket=bucket, Key=prog_key, Body=json.dumps(progress))
 
     if not nf_running:
         break
