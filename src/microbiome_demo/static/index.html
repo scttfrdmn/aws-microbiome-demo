@@ -144,6 +144,13 @@
       min-height: 1.4em;
     }
 
+    .quota-line {
+      margin-top: 4px;
+      font-size: 0.78rem;
+      color: var(--teal);
+      min-height: 1.2em;
+    }
+
     /* ── Progress bar ────────────────────────────────────────────── */
     .progress-wrap {
       margin-top: 12px;
@@ -163,6 +170,25 @@
       font-size: 0.78rem;
       color: var(--muted);
       text-align: right;
+    }
+
+    /* ── Concurrency gauge ───────────────────────────────────────── */
+    .gauge-wrap {
+      height: 8px;
+      border-radius: 4px;
+      background: var(--border);
+      overflow: hidden;
+      margin-bottom: 6px;
+    }
+    .gauge-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width .4s ease, background .3s ease;
+    }
+    .gauge-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 10px;
     }
 
     /* ── Right panel ─────────────────────────────────────────────── */
@@ -200,27 +226,11 @@
       margin-top: 2px;
     }
 
-    /* Instance grid */
-    .instance-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
-      margin-top: 4px;
-    }
-    .instance-dot {
-      aspect-ratio: 1;
-      border-radius: 4px;
-      background: var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.65rem;
-      color: var(--muted);
-      transition: background .3s, color .3s;
-    }
-    .instance-dot.running  { background: rgba(210,153,34,.2); color: var(--amber); }
-    .instance-dot.complete { background: rgba(63,185,80,.2);  color: var(--green); }
-    .instance-dot.failed   { background: rgba(248,81,73,.2);  color: var(--red);   }
+    /* Data volumes table */
+    .volumes-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .volumes-table td { padding: 5px 4px; border-bottom: 1px solid rgba(48,54,61,.4); }
+    .volumes-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    .volumes-table tr:last-child td { border-bottom: none; }
 
     /* Species table */
     .species-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
@@ -256,7 +266,7 @@
 <header>
   <div>
     <h1>HMP Microbiome Analysis</h1>
-    <div class="sub">100 samples · 3 body sites · 8× Graviton3 · nf-core/taxprofiler</div>
+    <div class="sub">100 samples · 3 body sites · nf-core/taxprofiler · nf-spawn per-task EC2</div>
     <div class="sub" style="color: var(--teal); font-size: 0.75rem; margin-top: 2px;">
       Data: <strong>NCBI SRA Open Data (RODA)</strong> — read directly, nothing copied, $0 data cost
     </div>
@@ -295,9 +305,10 @@
 
       <template x-if="events.length === 0 && status === 'idle'">
         <div style="color: var(--muted); font-size: 0.88rem; padding: 20px 0;">
-          Press <strong>Start Analysis</strong> to launch 8× c7g.4xlarge Graviton3 instances
-          and profile 100 Human Microbiome Project samples across 3 body sites.<br><br>
-          Workers read HMP data <strong>directly from
+          Press <strong>Start Analysis</strong> to launch the pipeline.<br><br>
+          1 head instance <strong>(t4g.small)</strong> runs Nextflow with nf-spawn,
+          dispatching each task to its own purpose-sized EC2 instance. Workers read HMP
+          data <strong>directly from
           <a href="https://registry.opendata.aws/ncbi-sra/" target="_blank"
              style="color: var(--teal)">RODA</a></strong>
           (s3://sra-pub-run-odp/) — no staging, no copying, $0 data cost.
@@ -314,6 +325,7 @@
       </button>
 
       <div class="phase-line" x-text="phase"></div>
+      <div class="quota-line" x-show="quotaSummary" x-text="quotaSummary"></div>
 
       <template x-if="progress">
         <div>
@@ -328,7 +340,7 @@
     </div>
   </div>
 
-  <!-- Right panel: cost, instances, species, insight -->
+  <!-- Right panel: cost, elapsed, concurrency, data volumes, species, insight, receipt -->
   <div class="panel-col">
 
     <!-- Cost meter -->
@@ -346,18 +358,44 @@
       <div style="font-size: 0.78rem; color: var(--muted);" x-text="elapsedSub"></div>
     </div>
 
-    <!-- Worker instances -->
-    <div class="panel-section" x-show="instanceIds.length > 0">
-      <h3>Worker Instances (<span x-text="instanceIds.length"></span>× <span x-text="instanceType"></span>)</h3>
-      <div class="instance-grid">
-        <template x-for="(iid, idx) in instanceIds" :key="iid">
-          <div class="instance-dot"
-               :class="instanceStatuses[iid] || 'idle'"
-               :title="iid">
-            <span x-text="idx + 1"></span>
-          </div>
-        </template>
+    <!-- Task Concurrency gauge -->
+    <div class="panel-section" x-show="queueSize > 0">
+      <h3>Task Concurrency</h3>
+
+      <!-- Concurrency bar: tasks_running / queue_size -->
+      <div class="gauge-wrap">
+        <div class="gauge-fill"
+             :style="`width: ${concurrencyPct.toFixed(1)}%; background: ${concurrencyPct >= 80 ? 'var(--green)' : 'var(--amber)'}`"></div>
       </div>
+      <div class="gauge-label"
+           x-text="`${tasksRunning} / ${queueSize} tasks running  (queue size: ${queueSize})`"></div>
+
+      <!-- Completion bar -->
+      <div class="gauge-wrap">
+        <div class="gauge-fill"
+             :style="`width: ${completionPct.toFixed(1)}%; background: var(--blue)`"></div>
+      </div>
+      <div class="gauge-label"
+           x-text="`${tasksDone} / ${tasksTotal} tasks complete`"></div>
+    </div>
+
+    <!-- Data Volumes -->
+    <div class="panel-section" x-show="rodaGb > 0">
+      <h3>Data Volumes</h3>
+      <table class="volumes-table">
+        <tr>
+          <td style="color: var(--muted);">RODA (SRA)</td>
+          <td x-text="rodaGb.toFixed(2) + ' GB'"></td>
+        </tr>
+        <tr>
+          <td style="color: var(--muted);">FASTQ</td>
+          <td x-text="fastqGb.toFixed(2) + ' GB'"></td>
+        </tr>
+        <tr>
+          <td style="color: var(--muted);">Expansion</td>
+          <td style="color: var(--teal);" x-text="expansionRatio.toFixed(1) + '×'"></td>
+        </tr>
+      </table>
     </div>
 
     <!-- Species preview -->
@@ -429,10 +467,24 @@ function demo() {
     _ticker: null,
     _ws: null,
 
+    // concurrency / task tracking
+    queueSize: 0,
+    tasksRunning: 0,
+    tasksTotal: 0,
+    tasksDone: 0,
+    concurrencyPct: 0,
+    completionPct: 0,
+
+    // data volumes
+    rodaGb: 0,
+    fastqGb: 0,
+    expansionRatio: 0,
+
+    // quota
+    quotaSummary: '',
+
     get costSub() {
-      const instances = this.instanceIds.length || 8;
-      const rate = 0.6528;
-      return `${instances}× c7g.4xlarge @ $${rate}/hr`;
+      return 'Nextflow head (t4g.small) + task instances';
     },
     get elapsedSub() {
       if (!this.progress) return '';
@@ -474,6 +526,18 @@ function demo() {
           this._addEvent('Phase', ev.label, now);
           break;
 
+        case 'quota':
+          this.queueSize = ev.queue_size || 0;
+          this.quotaSummary = ev.summary || '';
+          this._addEvent('Quota', ev.summary || `Queue size: ${ev.queue_size}`, now);
+          break;
+
+        case 'head_launched':
+          this.status = 'running';
+          if (!this._ticker) this._startTicker();
+          this._addEvent('Head Node', `Head node: ${ev.instance_id}`, now);
+          break;
+
         case 'workers_launched':
           this.instanceIds = ev.instance_ids || [];
           this.status = 'running';
@@ -482,15 +546,23 @@ function demo() {
           break;
 
         case 'progress':
-          this.progress = {completed: ev.completed, total: ev.total};
+          this.progress = {completed: ev.completed || ev.tasks_done || 0, total: ev.total || ev.tasks_total || 0};
           this.ec2Cost = ev.ec2_cost_usd || 0;
           this.elapsedSec = ev.elapsed_seconds || 0;
-          this.instanceStatuses = {};
-          if (ev.instance_statuses) {
-            this.instanceStatuses = ev.instance_statuses;
-          }
+          this.tasksRunning = ev.tasks_running || 0;
+          this.tasksTotal = ev.tasks_total || 0;
+          this.tasksDone = ev.tasks_done || 0;
+          this.queueSize = ev.queue_size || this.queueSize;
+          this.concurrencyPct = ev.concurrency_pct || 0;
+          this.completionPct = ev.completion_pct || 0;
+          this.rodaGb = ev.roda_gb || 0;
+          this.fastqGb = ev.fastq_gb || 0;
+          this.expansionRatio = ev.expansion_ratio || 0;
           if (ev.species_counts) {
             this.speciesCounts = ev.species_counts;
+          }
+          if (ev.instance_statuses) {
+            this.instanceStatuses = ev.instance_statuses;
           }
           break;
 
@@ -548,11 +620,11 @@ function demo() {
 
     _startTicker() {
       this._ticker = setInterval(() => {
-        if (this.status === 'running' && this.progress) {
+        if (this.status === 'running') {
           this.elapsedSec += 1;
-          // Approximate cost tick between server updates
-          const instances = this.instanceIds.length || 8;
-          this.ec2Cost += instances * 0.6528 / 3600;
+          // Approximate cost tick between server updates (head t4g.small + any running task instances)
+          const taskInstances = Math.max(this.tasksRunning, 1);
+          this.ec2Cost += taskInstances * 0.0168 / 3600;
         }
       }, 1000);
     },
@@ -566,7 +638,7 @@ function demo() {
 
     _buildReceipt() {
       const rows = [
-        {label: `EC2 (${this.instanceIds.length || 8}× c7g.4xlarge, ${this.fmtElapsed(this.elapsedSec)})`, usd: this.ec2Cost},
+        {label: `EC2 (head t4g.small + task instances, ${this.fmtElapsed(this.elapsedSec)})`, usd: this.ec2Cost},
       ];
       if (this.bedrockCost > 0) {
         rows.push({label: 'Bedrock (Claude Sonnet synthesis)', usd: this.bedrockCost});
@@ -589,6 +661,16 @@ function demo() {
       this.speciesCounts = {};
       this.insight = '';
       this.receipt = [];
+      this.queueSize = 0;
+      this.tasksRunning = 0;
+      this.tasksTotal = 0;
+      this.tasksDone = 0;
+      this.concurrencyPct = 0;
+      this.completionPct = 0;
+      this.rodaGb = 0;
+      this.fastqGb = 0;
+      this.expansionRatio = 0;
+      this.quotaSummary = '';
 
       try {
         const resp = await fetch('/api/start', {method: 'POST'});

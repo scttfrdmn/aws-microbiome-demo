@@ -28,5 +28,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# worker_script.py contains Python embedded inside bash heredoc strings;
+# ruff cannot parse those sections and reports false invalid-syntax errors.
+"src/microbiome_demo/worker_script.py" = ["E501", "E999"]
+"src/microbiome_demo/nextflow_config.py" = ["E501"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

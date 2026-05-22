@@ -1,307 +1,393 @@
 """
-worker_script.py  --  generate the cloud-init bash script for each spawn worker.
+worker_script.py  --  generate the cloud-init bash script for the Nextflow head node.
 
-Each worker instance:
-  1. Downloads its assigned SRR accession list from S3 (a tiny JSON file).
-  2. For each accession, pulls the SRA file DIRECTLY from RODA
-     (s3://sra-pub-run-odp/) using --no-sign-request — no egress cost,
-     no data copied to your bucket, S3-internal speeds within us-east-1.
-  3. Converts SRA → FASTQ with fasterq-dump (pre-installed on the AMI).
-  4. Runs nf-core/taxprofiler (Kraken2 + MetaPhlAn) against the local FASTQs.
-  5. Parses Kraken2 output and writes per-sample JSON results to your S3 bucket.
-  6. Touches /tmp/SPAWN_COMPLETE to signal spawn that it is done.
+Architecture:
+  app.py launches ONE small head instance (t4g.small) via spawn.
+  The head instance runs Nextflow with the nf-spawn executor plugin.
+  Nextflow dispatches each pipeline task to its own ephemeral EC2 instance
+  (sized per process label), which self-terminates when the task completes.
 
-The S3 bucket is used ONLY for:
-  - Input:  per-worker SRR lists     (written by app.py before launch, ~1 KB each)
-  - Output: per-sample result JSON   (written by each worker, ~10 KB each)
-  - Output: summary.json             (written by the last worker to finish)
+Data flow:
+  RODA (s3://sra-pub-run-odp/) ──► fasterq-dump task instance
+                                        │ FASTQs
+                                        ▼ s3://bucket/work/
+                                   fastp task instance
+                                        │ trimmed FASTQs
+                                        ▼ s3://bucket/work/
+                         ┌─────────────┴────────────┐
+                    Kraken2 instance         MetaPhlAn instance
+                         └─────────────┬────────────┘
+                                        ▼ s3://bucket/work/
+                                  Taxpasta/MultiQC instance
+                                        ▼
+                               s3://bucket/results/
 
-The HMP data itself NEVER enters your bucket.
+The head instance is responsible for:
+  1. Writing nextflow.config (uploaded from app.py as an S3 object)
+  2. Building the taxprofiler samplesheet from the SRR accession list
+  3. Running `nextflow run nf-core/taxprofiler`
+  4. Writing a progress.json to S3 periodically (dashboard polls this)
+  5. Writing final summary.json on completion
+  6. Touching /tmp/SPAWN_COMPLETE so spawn knows the head is done
+
+Data volume tracking:
+  fasterq-dump reports bytes read from RODA; we capture this and the
+  output FASTQ sizes to show the SRA compression ratio in the dashboard.
 """
 
 from __future__ import annotations
 
 import tempfile
 
-# Token substitution style (not str.format) avoids conflicts with bash ${VAR}
-# and Python f-string syntax inside the embedded script sections.
 _TOK_BUCKET = "@@BUCKET@@"
 _TOK_REGION = "@@REGION@@"
 _TOK_JOB_NAME = "@@JOB_NAME@@"
-_TOK_SLICE_KEY = "@@SLICE_KEY@@"
+_TOK_NF_CFG = "@@NF_CONFIG_KEY@@"  # S3 key for the rendered nextflow.config
+_TOK_SRR_KEY = "@@SRR_LIST_KEY@@"  # S3 key for the SRR accession list JSON
 
-_WORKER_TEMPLATE = r"""#!/bin/bash
+_HEAD_SCRIPT = r"""#!/bin/bash
 set -euxo pipefail
-exec > /var/log/nextflow-worker.log 2>&1
+exec > /var/log/nextflow-head.log 2>&1
 
-echo "=== Microbiome Demo Worker ==="
+echo "=== Microbiome Demo — Head Node ==="
 echo "Started: $(date)"
 echo "Instance: $(curl -sf http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
 
 BUCKET="@@BUCKET@@"
 REGION="@@REGION@@"
 JOB_NAME="@@JOB_NAME@@"
-SLICE_KEY="@@SLICE_KEY@@"
+NF_CONFIG_KEY="@@NF_CONFIG_KEY@@"
+SRR_LIST_KEY="@@SRR_LIST_KEY@@"
+RESULTS_PREFIX="s3://${BUCKET}/results/${JOB_NAME}"
+PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 
-# Verify databases are present (should be pre-staged on the AMI).
-if [ ! -f /opt/databases/kraken2/hash.k2d ]; then
-    echo "ERROR: Kraken2 database not found — was the AMI baked correctly?"
-    exit 1
-fi
+# ── Prerequisites check ──────────────────────────────────────────────────────
+command -v nextflow || { echo "ERROR: nextflow not found on PATH"; exit 1; }
+command -v spawn    || { echo "ERROR: spawn not found on PATH"; exit 1; }
+test -f /opt/databases/kraken2/hash.k2d \
+    || { echo "ERROR: Kraken2 database missing — was the AMI baked?"; exit 1; }
 
-# Download this instance's SRR accession list from S3.
-# This is a tiny JSON file (~1 KB) — the only thing we read from our bucket
-# before the analysis starts.
-aws s3 cp "s3://${BUCKET}/${SLICE_KEY}" /tmp/srr_list.json --region "${REGION}"
-python3 -c 'import json; n=len(json.load(open("/tmp/srr_list.json"))); print(f"{n} accessions")'
+# ── Download config and SRR list ─────────────────────────────────────────────
+mkdir -p /tmp/nf-head
+aws s3 cp "s3://${BUCKET}/${NF_CONFIG_KEY}" /tmp/nf-head/nextflow.config \
+    --region "${REGION}"
+aws s3 cp "s3://${BUCKET}/${SRR_LIST_KEY}" /tmp/nf-head/srr_list.json \
+    --region "${REGION}"
 
-mkdir -p /tmp/sra /tmp/fastq /tmp/nextflow_output
-
-# For each SRR: pull directly from RODA, convert to FASTQ, run analysis.
-# RODA (sra-pub-run-odp) is in us-east-1 — same region as these instances.
-# --no-sign-request: the bucket is public, no AWS credentials needed to read it.
+# ── Build taxprofiler samplesheet ────────────────────────────────────────────
+# Each sample reads its SRA file DIRECTLY from RODA at task runtime.
+# The samplesheet contains SRR accessions — nf-core/fetchngs or the
+# built-in SRA support converts them to FASTQ on the task instance.
 python3 - << 'PYEOF'
-import json, os, subprocess, sys
+import csv, json, sys
 
-with open("/tmp/srr_list.json") as f:
-    samples = json.load(f)   # list of {"srr": "SRRxxxxxx", "body_site": "stool"}
+with open("/tmp/nf-head/srr_list.json") as f:
+    samples = json.load(f)
 
-samplesheet_rows = []
-
+rows = []
 for item in samples:
-    srr = item["srr"]
-    body_site = item["body_site"]
-    sra_path = f"/tmp/sra/{srr}.sra"
-    fastq_dir = f"/tmp/fastq/{srr}"
-    os.makedirs(fastq_dir, exist_ok=True)
-
-    # Pull directly from RODA — no copy to our bucket, no egress charge.
-    print(f"Fetching {srr} from RODA...", flush=True)
-    subprocess.run([
-        "aws", "s3", "cp",
-        f"s3://sra-pub-run-odp/sra/{srr}/{srr}.sra",
-        sra_path,
-        "--no-sign-request",
-        "--region", "us-east-1",
-        "--no-progress",
-    ], check=True)
-
-    # Convert SRA → FASTQ (in-place, no extra download needed).
-    print(f"Converting {srr} to FASTQ...", flush=True)
-    result = subprocess.run([
-        "fasterq-dump", sra_path,
-        "--outdir", fastq_dir,
-        "--threads", "8",
-        "--skip-technical",
-        "--split-3",        # paired-end if available, single-end otherwise
-    ], capture_output=True, text=True)
-
-    if result.returncode != 0:
-        print(f"  fasterq-dump failed for {srr}: {result.stderr[:200]}", flush=True)
-        continue
-
-    # Find the output FASTQ file(s)
-    fastq_files = sorted([
-        f for f in os.listdir(fastq_dir) if f.endswith(".fastq")
-    ])
-    if not fastq_files:
-        print(f"  No FASTQ output for {srr} — skipping", flush=True)
-        continue
-
-    fq1 = os.path.join(fastq_dir, fastq_files[0])
-    fq2 = os.path.join(fastq_dir, fastq_files[1]) if len(fastq_files) > 1 else ""
-
-    samplesheet_rows.append({
-        "sample": f"{srr}_{body_site}",
-        "run_accession": srr,
-        "body_site": body_site,
-        "instrument_platform": "ILLUMINA",
-        "fastq_1": fq1,
-        "fastq_2": fq2,
-        "fasta": "",
+    srr  = item["srr"]
+    site = item["body_site"]
+    rows.append({
+        "sample":               f"{srr}_{site}",
+        "run_accession":        srr,
+        "instrument_platform":  "ILLUMINA",
+        # SRA accession — nf-core/taxprofiler fetches via fasterq-dump
+        # directly from RODA (s3://sra-pub-run-odp/).
+        "fastq_1": "",
+        "fastq_2": "",
+        "fasta":   "",
     })
 
-    # Remove the SRA file immediately to free disk space.
-    os.remove(sra_path)
-    print(f"  {srr} ready ({len(fastq_files)} FASTQ file(s))", flush=True)
+out = "/tmp/nf-head/samplesheet.csv"
+with open(out, "w", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=["sample", "run_accession",
+                                       "instrument_platform",
+                                       "fastq_1", "fastq_2", "fasta"])
+    w.writeheader()
+    w.writerows(rows)
 
-# Write the samplesheet for Nextflow.
-import csv
-with open("/tmp/samplesheet.csv", "w", newline="") as f:
-    writer = csv.DictWriter(
-        f,
-        fieldnames=["sample", "run_accession", "instrument_platform",
-                    "fastq_1", "fastq_2", "fasta"],
-    )
-    writer.writeheader()
-    for row in samplesheet_rows:
-        writer.writerow({k: row[k] for k in ["sample", "run_accession",
-                                              "instrument_platform",
-                                              "fastq_1", "fastq_2", "fasta"]})
-
-# Save body_site mapping for the result parser.
-body_site_map = {r["run_accession"]: r["body_site"] for r in samplesheet_rows}
-with open("/tmp/body_site_map.json", "w") as f:
-    json.dump(body_site_map, f)
-
-print(f"Samplesheet written: {len(samplesheet_rows)} samples", flush=True)
+print(f"Samplesheet: {len(rows)} samples → {out}")
 PYEOF
 
-echo "FASTQ preparation complete."
-
-# Write a Nextflow config pointing at the pre-staged databases.
-cat > /tmp/nextflow.config << 'NFCONFIG'
-process {
-    executor = 'local'
-    maxForks = 16
-}
-params {
-    kraken2_db = '/opt/databases/kraken2'
-    metaphlan_db = '/opt/databases/metaphlan'
-    run_kraken2 = true
-    run_metaphlan = true
-    run_bracken = false
-    run_humann = false
-    perform_shortread_hostremoval = false
-    shortread_qc_tool = 'fastp'
-    save_preprocessed_reads = false
-}
-NFCONFIG
-
-# Run the pipeline against the local FASTQs.
-OUTDIR="/tmp/nextflow_output"
-NXF_HOME=/opt/nextflow_cache \
-    /usr/local/bin/nextflow run nf-core/taxprofiler \
-    --input /tmp/samplesheet.csv \
-    --outdir "${OUTDIR}" \
-    -c /tmp/nextflow.config \
-    -profile singularity \
-    -resume \
-    2>&1 | tee /tmp/nextflow.stdout
-
-echo "Nextflow run complete."
-
-# Parse Kraken2 outputs and upload per-sample JSON to S3 (results only — no raw data).
-cat > /tmp/parse_results.py << 'PYEOF'
-import glob, json, re, boto3
+# ── Write initial progress ───────────────────────────────────────────────────
+python3 - << 'PYEOF'
+import json, boto3, time
 
 s3 = boto3.client("s3", region_name="@@REGION@@")
-bucket = "@@BUCKET@@"
-job_name = "@@JOB_NAME@@"
-outdir = "/tmp/nextflow_output"
-
-with open("/tmp/body_site_map.json") as f:
-    body_site_map = json.load(f)
-
-
-def parse_kraken2_report(path, srr, body_site):
-    species = []
-    with open(path) as f:
-        for line in f:
-            fields = line.strip().split("\t")
-            if len(fields) < 6:
-                continue
-            pct, reads, rank, name = fields[0], fields[1], fields[3], fields[5]
-            if rank == "S" and float(pct) > 0.1:
-                species.append({"name": name.strip(), "pct": float(pct), "reads": int(reads)})
-    species.sort(key=lambda x: x["pct"], reverse=True)
-    return {
-        "srr": srr,
-        "body_site": body_site,
-        "top_species": [s["name"] for s in species[:10]],
-        "species_detail": species[:20],
-    }
-
-
-reports = glob.glob(f"{outdir}/**/kraken2/*.report.txt", recursive=True)
-if not reports:
-    reports = glob.glob(f"{outdir}/**/taxonomy/*.report.txt", recursive=True)
-
-uploaded = 0
-for report_path in reports:
-    m = re.search(r"(SRR\d+)", report_path)
-    if not m:
-        continue
-    srr = m.group(1)
-    body_site = body_site_map.get(srr, "unknown")
-    data = parse_kraken2_report(report_path, srr, body_site)
-    key = f"results/{job_name}/kraken2/{srr}.json"
-    s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(data))
-    uploaded += 1
-
-print(f"Uploaded {uploaded} result files to s3://{bucket}/results/{job_name}/kraken2/")
+progress = {
+    "status":        "running",
+    "started_at":    time.time(),
+    "queue_size":    0,
+    "tasks_total":   0,
+    "tasks_running": 0,
+    "tasks_done":    0,
+    "tasks_failed":  0,
+    # Data volume counters (updated as trace.tsv grows)
+    "roda_bytes_read":  0,   # bytes read from s3://sra-pub-run-odp/
+    "fastq_bytes":      0,   # total FASTQ bytes after SRA conversion
+    "result_bytes":     0,   # Kraken2/MetaPhlAn output size
+}
+s3.put_object(
+    Bucket="@@BUCKET@@",
+    Key="results/@@JOB_NAME@@/progress.json",
+    Body=json.dumps(progress),
+)
 PYEOF
 
-python3 /tmp/parse_results.py
+# ── Run the pipeline ─────────────────────────────────────────────────────────
+# NXF_HOME points to the pre-pulled pipeline cache on the AMI.
+# The nf-spawn plugin JAR is in ~/.nextflow/plugins/ (also on the AMI).
+NXF_HOME=/opt/nextflow_cache \
+    /usr/local/bin/nextflow run nf-core/taxprofiler \
+    --input /tmp/nf-head/samplesheet.csv \
+    --outdir "${RESULTS_PREFIX}" \
+    -c /tmp/nf-head/nextflow.config \
+    -w "s3://${BUCKET}/work/${JOB_NAME}/" \
+    -resume \
+    2>&1 | tee /tmp/nf-head/nextflow.stdout &
 
-echo "Results uploaded."
+NF_PID=$!
 
-# Signal spawn that this instance is done.
+# ── Progress monitor (runs alongside Nextflow) ───────────────────────────────
+# Polls the Nextflow trace file on S3 and the local .nextflow.log every 15s.
+# Updates progress.json so the dashboard has live numbers.
+cat > /tmp/nf-head/monitor.py << 'MONEOF'
+import boto3, json, re, sys, time, os
+
+s3        = boto3.client("s3", region_name="@@REGION@@")
+bucket    = "@@BUCKET@@"
+job_name  = "@@JOB_NAME@@"
+trace_key = f"results/{job_name}/trace.tsv"
+prog_key  = f"results/{job_name}/progress.json"
+nf_pid    = int(sys.argv[1])
+
+def read_trace():
+    # Parse the Nextflow trace TSV and return per-task stats.
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=trace_key)
+        lines = resp["Body"].read().decode().splitlines()
+    except Exception:
+        return []
+
+    if len(lines) < 2:
+        return []
+
+    header = lines[0].split("\t")
+    tasks  = []
+    for line in lines[1:]:
+        fields = dict(zip(header, line.split("\t")))
+        tasks.append(fields)
+    return tasks
+
+
+def parse_rchar(s):
+    # Parse rchar field (bytes read) from trace — handles 'N/A' and plain integers.
+    if not s or s in ("-", "N/A", ""):
+        return 0
+    # Nextflow reports bytes as plain integers in trace
+    try:
+        return int(s)
+    except ValueError:
+        return 0
+
+
+def is_sra_fetch_task(name):
+    # True if this task is the SRA fetch/conversion step.
+    return any(k in name.lower() for k in ("fasterq", "sratools", "fetchngs", "sra"))
+
+
+started_at = time.time()
+
+while True:
+    time.sleep(15)
+
+    # Check if Nextflow has exited
+    nf_running = os.path.exists(f"/proc/{nf_pid}")
+
+    tasks = read_trace()
+
+    running = sum(1 for t in tasks if t.get("status") == "RUNNING")
+    done    = sum(1 for t in tasks if t.get("status") == "COMPLETED")
+    failed  = sum(1 for t in tasks if t.get("status") in ("FAILED", "ABORTED"))
+    total   = len(tasks)
+
+    # Data volume: rchar for SRA fetch tasks = bytes read from RODA
+    roda_bytes = sum(
+        parse_rchar(t.get("rchar", "0"))
+        for t in tasks
+        if is_sra_fetch_task(t.get("name", ""))
+    )
+    # wchar for SRA fetch tasks ≈ FASTQ bytes written
+    fastq_bytes = sum(
+        parse_rchar(t.get("wchar", "0"))
+        for t in tasks
+        if is_sra_fetch_task(t.get("name", ""))
+    )
+    # rchar for classifier tasks = FASTQ bytes read for analysis
+    analysis_bytes = sum(
+        parse_rchar(t.get("rchar", "0"))
+        for t in tasks
+        if any(k in t.get("name", "").lower()
+               for k in ("kraken2", "metaphlan", "bracken"))
+    )
+
+    progress = {
+        "status":          "complete" if not nf_running else "running",
+        "started_at":      started_at,
+        "elapsed_seconds": time.time() - started_at,
+        "tasks_total":     total,
+        "tasks_running":   running,
+        "tasks_done":      done,
+        "tasks_failed":    failed,
+        # Data volumes
+        "roda_bytes_read":    roda_bytes,    # read from RODA
+        "fastq_bytes":        fastq_bytes,   # FASTQ after SRA conversion
+        "analysis_bytes_read": analysis_bytes,  # read by classifiers
+    }
+
+    s3.put_object(
+        Bucket=bucket,
+        Key=prog_key,
+        Body=json.dumps(progress),
+    )
+
+    if not nf_running:
+        break
+
+MONEOF
+
+python3 /tmp/nf-head/monitor.py ${NF_PID} &
+MONITOR_PID=$!
+
+# Wait for Nextflow to finish
+wait ${NF_PID}
+NF_EXIT=$?
+
+# Give monitor one final cycle then stop it
+sleep 20
+kill ${MONITOR_PID} 2>/dev/null || true
+
+# ── Write final summary ──────────────────────────────────────────────────────
+python3 - << 'PYEOF'
+import boto3, json, time, glob, os
+
+s3         = boto3.client("s3", region_name="@@REGION@@")
+bucket     = "@@BUCKET@@"
+job_name   = "@@JOB_NAME@@"
+results_pf = f"results/{job_name}"
+
+# Read final progress
+try:
+    prog = json.loads(
+        s3.get_object(Bucket=bucket, Key=f"{results_pf}/progress.json")["Body"].read()
+    )
+except Exception:
+    prog = {}
+
+# Aggregate per-body-site species from Kraken2 result JSONs
+body_sites: dict = {}
+paginator = s3.get_paginator("list_objects_v2")
+for page in paginator.paginate(Bucket=bucket, Prefix=f"{results_pf}/kraken2/"):
+    for obj in page.get("Contents", []):
+        try:
+            data = json.loads(s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read())
+            site = data.get("body_site", "unknown")
+            if site not in body_sites:
+                body_sites[site] = {"top_species": [], "diversity": {}}
+            # Accumulate top species (dedup)
+            for sp in data.get("top_species", []):
+                if sp not in body_sites[site]["top_species"]:
+                    body_sites[site]["top_species"].append(sp)
+        except Exception:
+            continue
+
+# Trim to top 10 per site
+for site in body_sites:
+    body_sites[site]["top_species"] = body_sites[site]["top_species"][:10]
+
+summary = {
+    "total_samples":    prog.get("tasks_done", 0),
+    "completed":        prog.get("tasks_done", 0),
+    "failed":           prog.get("tasks_failed", 0),
+    "elapsed_seconds":  prog.get("elapsed_seconds", 0),
+    "body_sites":       body_sites,
+    "cross_site_comparison": {},
+    # Data volumes for the dashboard
+    "data_volumes": {
+        "roda_bytes_read":     prog.get("roda_bytes_read", 0),
+        "fastq_bytes":         prog.get("fastq_bytes", 0),
+        "analysis_bytes_read": prog.get("analysis_bytes_read", 0),
+    },
+}
+s3.put_object(
+    Bucket=bucket,
+    Key=f"{results_pf}/summary.json",
+    Body=json.dumps(summary),
+)
+print(f"Summary written: {summary['total_samples']} samples, "
+      f"{summary['data_volumes']['roda_bytes_read']:,} bytes from RODA")
+PYEOF
+
 touch /tmp/SPAWN_COMPLETE
-echo "=== Worker complete: $(date) ==="
-"""
-
-_SLICE_TEMPLATE = """[
-@@ENTRIES@@
-]
+echo "=== Head node complete: $(date) (Nextflow exit: ${NF_EXIT}) ==="
 """
 
 
-def render(cfg, slice_key: str) -> str:
-    """Return the worker bash script with config values substituted."""
+def render(cfg, nf_config_key: str, srr_list_key: str) -> str:
+    """Return the head node bash script with config values substituted."""
 
     def _sub(s: str) -> str:
         return (
             s.replace(_TOK_BUCKET, cfg.BUCKET)
             .replace(_TOK_REGION, cfg.REGION)
             .replace(_TOK_JOB_NAME, cfg.JOB_NAME)
-            .replace(_TOK_SLICE_KEY, slice_key)
+            .replace(_TOK_NF_CFG, nf_config_key)
+            .replace(_TOK_SRR_KEY, srr_list_key)
         )
 
-    return _sub(_WORKER_TEMPLATE)
+    return _sub(_HEAD_SCRIPT)
 
 
 def write_temp(script: str) -> str:
-    """Write the script to a NamedTemporaryFile and return its path."""
+    """Write script to a NamedTemporaryFile and return its path."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
         f.write(script)
         return f.name
 
 
-def write_srr_slices(cfg, accessions: list[tuple[str, str]]) -> list[str]:
-    """Split accessions into per-instance slices and upload as JSON to S3.
+def write_srr_slice(cfg, accessions: list[tuple[str, str]]) -> str:
+    """Upload the full SRR accession list as a single JSON to S3.
 
-    Each slice file is a tiny JSON list of {"srr": ..., "body_site": ...} dicts.
-    The actual HMP data stays on RODA — only accession numbers are written here.
+    With nf-spawn, Nextflow manages parallelism — we give the head node
+    all accessions and let queueSize control concurrency.
 
-    Args:
-        cfg:        config module (BUCKET, REGION, JOB_NAME, INSTANCE_COUNT).
-        accessions: list of (srr, body_site) tuples.
-
-    Returns:
-        List of S3 keys for the slice files.
+    Returns the S3 key.
     """
     import json
 
     import boto3
 
     s3 = boto3.client("s3", region_name=cfg.REGION)
-    n = cfg.INSTANCE_COUNT
-    slice_size = max(1, (len(accessions) + n - 1) // n)
+    entries = [{"srr": srr, "body_site": bs} for srr, bs in accessions]
+    key = f"slices/{cfg.JOB_NAME}/srr_list.json"
+    s3.put_object(
+        Bucket=cfg.BUCKET,
+        Key=key,
+        Body=json.dumps(entries, indent=2).encode(),
+    )
+    return key
 
-    keys: list[str] = []
-    for i in range(n):
-        chunk = accessions[i * slice_size : (i + 1) * slice_size]
-        if not chunk:
-            break
 
-        entries = [{"srr": srr, "body_site": bs} for srr, bs in chunk]
-        key = f"slices/{cfg.JOB_NAME}/srr_list_{i:03d}.json"
-        s3.put_object(
-            Bucket=cfg.BUCKET,
-            Key=key,
-            Body=json.dumps(entries, indent=2).encode(),
-        )
-        keys.append(key)
+def upload_nextflow_config(cfg, nf_config_str: str) -> str:
+    """Upload the rendered nextflow.config to S3 and return its key."""
+    import boto3
 
-    return keys
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    key = f"config/{cfg.JOB_NAME}/nextflow.config"
+    s3.put_object(
+        Bucket=cfg.BUCKET,
+        Key=key,
+        Body=nf_config_str.encode(),
+    )
+    return key
