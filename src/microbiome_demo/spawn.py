@@ -1,14 +1,14 @@
 """
 spawn.py  --  thin programmatic wrapper around the spawn CLI.
 
-Provides two async-friendly helpers:
-  - launch_workers()   spawn a job array of N worker instances
-  - poll_workers()     check whether all workers have finished
-  - stop_workers()     terminate all instances in a job group
+Provides helpers for launching and monitoring EC2 instances via spawn:
+  - launch_instance()  launch a single named instance
+  - poll_workers()     check whether instances have finished
+  - stop_workers()     terminate instances (best-effort)
 
-All calls shell out to the `spawn` binary.  The caller is responsible
+All calls shell out to the `spawn` binary on PATH.  The caller is responsible
 for passing a valid config object that exposes INSTANCE_TYPE, REGION,
-AMI_ID, INSTANCE_COUNT, INSTANCE_TTL, and JOB_NAME.
+AMI_ID, INSTANCE_TTL, and JOB_NAME.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 @dataclass
 class WorkerGroup:
-    """Tracks a launched group of spawn workers."""
+    """Tracks a launched set of spawn instances."""
 
     job_name: str
     instance_ids: list[str]
@@ -30,14 +30,13 @@ class WorkerGroup:
 
 def _run_spawn(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
     """Run a spawn subcommand, return the CompletedProcess."""
-    cmd = ["spawn"] + args
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+    return subprocess.run(["spawn"] + args, capture_output=True, text=True, check=check)
 
 
 def _spawn_json(args: list[str]) -> dict | list:
     """Run a spawn subcommand with JSON output and parse the result."""
     result = _run_spawn(args + ["-o", "json"], check=False)
-    if result.returncode not in (0, 2):  # 2 = still running (expected for status)
+    if result.returncode not in (0, 2):  # 2 = still running, expected for status
         raise RuntimeError(f"spawn error ({result.returncode}): {result.stderr[:500]}")
     try:
         return json.loads(result.stdout)
@@ -50,64 +49,63 @@ def launch_workers(
     user_data_path: str,
     emit: Callable[[dict], None] | None = None,
 ) -> WorkerGroup:
-    """Launch INSTANCE_COUNT worker instances via spawn.
+    """Launch one or more instances via spawn.
 
-    Each instance receives user_data_path as its cloud-init script and runs
-    the Nextflow pipeline fragment assigned to it via env vars.
+    When cfg.INSTANCE_COUNT == 1 (the head node case), omits --count so spawn
+    returns a single instance dict rather than a list.
 
     Args:
-        cfg:             config module with spawn/AWS settings.
-        user_data_path:  path to the bash startup script for the workers.
-        emit:            optional event callback for progress updates.
+        cfg:            config namespace (INSTANCE_TYPE, REGION, AMI_ID,
+                        INSTANCE_COUNT, INSTANCE_TTL, JOB_NAME).
+        user_data_path: path to the cloud-init bash script.
+        emit:           optional event callback for phase/progress updates.
 
     Returns:
-        WorkerGroup describing the running job.
+        WorkerGroup with the launched instance IDs.
     """
-    if emit:
-        emit({"type": "phase", "label": f"Launching {cfg.INSTANCE_COUNT} worker instances…"})
+    count = getattr(cfg, "INSTANCE_COUNT", 1)
+    label = "head instance" if count == 1 else f"{count} instances"
 
-    # spawn job array: --count N creates N instances with the same job name.
-    # Each instance gets a unique index injected as SPAWN_INSTANCE_INDEX env var
-    # so the pipeline script can figure out which sample slice to process.
-    result = subprocess.run(
-        [
-            "spawn",
-            "launch",
-            cfg.JOB_NAME,
-            "--instance-type",
-            cfg.INSTANCE_TYPE,
-            "--region",
-            cfg.REGION,
-            "--ami",
-            cfg.AMI_ID,
-            "--count",
-            str(cfg.INSTANCE_COUNT),
-            "--user-data-file",
-            user_data_path,
-            "--ttl",
-            cfg.INSTANCE_TTL,
-            "--wait-for-ssh",
-            "-o",
-            "json",
-            "-y",  # skip interactive cost confirmation
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if emit:
+        emit({"type": "phase", "label": f"Launching {label} ({cfg.INSTANCE_TYPE})…"})
+
+    cmd = [
+        "spawn",
+        "launch",
+        cfg.JOB_NAME,
+        "--instance-type",
+        cfg.INSTANCE_TYPE,
+        "--region",
+        cfg.REGION,
+        "--ami",
+        cfg.AMI_ID,
+        "--user-data-file",
+        user_data_path,
+        "--ttl",
+        cfg.INSTANCE_TTL,
+        "--wait-for-ssh",
+        "-o",
+        "json",
+        "-y",
+    ]
+    # Only pass --count for arrays; omit for single instances.
+    if count > 1:
+        cmd.extend(["--count", str(count)])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
         raise RuntimeError(f"spawn launch failed: {result.stderr[:500]}")
 
     data = json.loads(result.stdout)
 
-    # spawn returns either a list (job array) or a single dict (single instance).
+    # spawn returns a list for job arrays, a single dict for single instances.
     if isinstance(data, list):
         instance_ids = [d.get("instance_id") or d.get("InstanceId") for d in data]
     else:
         instance_ids = [data.get("instance_id") or data.get("InstanceId")]
 
-    instance_ids = [i for i in instance_ids if i]  # drop any None
+    instance_ids = [i for i in instance_ids if i]
 
     if emit:
         emit(
@@ -118,28 +116,24 @@ def launch_workers(
             }
         )
 
-    return WorkerGroup(
-        job_name=cfg.JOB_NAME,
-        instance_ids=instance_ids,
-        count=len(instance_ids),
-    )
+    return WorkerGroup(job_name=cfg.JOB_NAME, instance_ids=instance_ids, count=len(instance_ids))
 
 
 def poll_workers(instance_ids: list[str]) -> dict[str, str]:
     """Return status for each instance_id.
 
     Returns:
-        dict mapping instance_id → one of "running", "complete", "failed", "unknown".
+        dict mapping instance_id → "running" | "complete" | "failed" | "unknown"
+
+    spawn --check-complete exit codes:
+      0 = complete   (SPAWN_COMPLETE marker found)
+      1 = failed
+      2 = running
+      3 = error / not found
     """
     statuses: dict[str, str] = {}
-
     for iid in instance_ids:
         result = _run_spawn(["status", iid, "--check-complete"], check=False)
-        # spawn --check-complete exit codes:
-        #   0 = complete (SPAWN_COMPLETE marker found)
-        #   1 = failed
-        #   2 = still running
-        #   3 = error (instance not found, etc.)
         if result.returncode == 0:
             statuses[iid] = "complete"
         elif result.returncode == 1:
@@ -148,7 +142,6 @@ def poll_workers(instance_ids: list[str]) -> dict[str, str]:
             statuses[iid] = "running"
         else:
             statuses[iid] = "unknown"
-
     return statuses
 
 
@@ -159,7 +152,7 @@ def list_workers(job_name: str) -> list[dict]:
     except RuntimeError:
         return []
     if isinstance(data, list):
-        return [d for d in data if d.get("name") == job_name or job_name in d.get("name", "")]
+        return [d for d in data if job_name in d.get("name", "")]
     return []
 
 
