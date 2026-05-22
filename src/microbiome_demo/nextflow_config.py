@@ -32,7 +32,7 @@ _TEMPLATE = """\
 // DO NOT EDIT: regenerated on each run with live quota data
 
 plugins {{
-    id 'nf-spawn'
+    id 'nf-spawn@0.1.0'
 }}
 
 process {{
