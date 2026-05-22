@@ -109,6 +109,48 @@ mkdir -p /opt/databases/metaphlan
 metaphlan --install --bowtie2db /opt/databases/metaphlan \\
     --nproc 4 2>&1
 
+# --- spawn CLI --------------------------------------------------------------
+# The head node uses spawn to launch task instances via nf-spawn.
+# Install via the spore-host homebrew tap (ARM64 binary).
+curl -fsSL https://raw.githubusercontent.com/spore-host/homebrew-tap/main/install.sh \
+    | bash 2>&1 || true
+# Fallback: direct binary install if brew isn't available on AL2023
+if ! command -v spawn &>/dev/null; then
+    SPAWN_VER=$(curl -sf https://api.github.com/repos/spore-host/spore-host/releases/latest \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null \
+        || echo "v0.34.14")
+    curl -fsSL \
+        "https://github.com/spore-host/spore-host/releases/download/${SPAWN_VER}/spawn_linux_arm64.tar.gz" \
+        | tar -xz -C /usr/local/bin spawn
+fi
+spawn --version
+
+# --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
+# Builds the JAR from source and installs it into the shared Nextflow plugin
+# directory so all users on this AMI have the executor available.
+# Requires Java 21 (installed above) and Gradle (bundled in the repo as gradlew).
+mkdir -p /opt/nf-spawn
+cd /opt/nf-spawn
+git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
+# Build the plugin JAR
+./gradlew jar 2>&1
+# Nextflow looks for plugins in NXF_HOME/plugins/{name}-{version}/
+# We install into the shared NXF_HOME so all runs on this AMI pick it up.
+NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
+mkdir -p "${NF_PLUGIN_DIR}"
+# The JAR name and plugin ID come from build.gradle; copy with a stable name
+# so nextflow.config can reference it as 'nf-spawn' without a version pin.
+SPAWN_JAR=$(ls build/libs/nf-spawn-*.jar 2>/dev/null | head -1)
+if [ -z "${SPAWN_JAR}" ]; then
+    echo "ERROR: nf-spawn JAR not found after build"
+    exit 1
+fi
+PLUGIN_VERSION=$(basename "${SPAWN_JAR}" | sed 's/nf-spawn-//;s/\.jar//')
+PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${PLUGIN_VERSION}"
+mkdir -p "${PLUGIN_DEST}/classes"
+cp "${SPAWN_JAR}" "${PLUGIN_DEST}/nf-spawn-${PLUGIN_VERSION}.jar"
+echo "nf-spawn plugin installed: ${PLUGIN_DEST}"
+
 # --- Nextflow pipeline cache ------------------------------------------------
 # Pre-download the nf-core/taxprofiler pipeline so demo runs don't need
 # GitHub access or internet during the live demo.
@@ -117,10 +159,11 @@ NXF_HOME=/opt/nextflow_cache \\
     /usr/local/bin/nextflow pull nf-core/taxprofiler
 
 # --- Permissions ------------------------------------------------------------
-# Make databases readable by all users (the pipeline runs as ec2-user)
+# Make everything readable by all users (pipeline runs as ec2-user)
 chmod -R 755 /opt/databases
 chmod -R 755 /opt/nextflow_cache
 chmod -R 755 /opt/singularity
+chmod -R 755 /opt/nf-spawn
 
 # --- Completion signal ------------------------------------------------------
 echo "=== AMI bake complete: $(date) ==="

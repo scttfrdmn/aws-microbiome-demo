@@ -33,6 +33,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # ruff cannot parse those sections and reports false invalid-syntax errors.
 "src/microbiome_demo/worker_script.py" = ["E501", "E999"]
 "src/microbiome_demo/nextflow_config.py" = ["E501"]
+"build_ami.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
