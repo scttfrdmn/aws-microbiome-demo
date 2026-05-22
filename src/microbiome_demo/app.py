@@ -1,28 +1,30 @@
 """
 app.py  --  FastAPI backend for the microbiome demo dashboard.
 
-Endpoints:
-  GET  /            serves index.html
-  GET  /static/*    serves static assets
-  POST /api/start   launches the spawn job array and returns a run_id
-  WS   /ws          streams live progress events as JSON
-  GET  /api/status  returns current PipelineProgress snapshot
-  GET  /api/results returns the final summary.json (404 if not ready)
+Architecture:
+  - Queries vCPU quotas via truffle before launch.
+  - Launches ONE small Nextflow head instance (t4g.small) via spawn.
+  - The head instance runs nf-core/taxprofiler with the nf-spawn executor,
+    dispatching each pipeline task to its own ephemeral EC2 instance.
+  - Polls progress.json from S3 every 15 s and streams events over WebSocket.
 
-WebSocket event protocol (same style as the PCSK9 demo):
-
-  { "type": "phase",      "label": str }
-  { "type": "workers_launched", "count": int, "instance_ids": list[str] }
-  { "type": "progress",   "completed": int, "total": int,
-                          "running_instances": int, "complete_instances": int,
-                          "ec2_cost_usd": float, "elapsed_seconds": float }
-  { "type": "sample_done", "srr": str, "body_site": str, "top_species": list[str] }
-  { "type": "model",      "tier": str, "label": str, "state": "start"|"done",
-                          "usage"?: dict, "cost"?: float }
-  { "type": "insight",    "text": str }
-  { "type": "cost",       "total": float }
+WebSocket event protocol:
+  { "type": "phase",    "label": str }
+  { "type": "quota",    "queue_size": int, "summary": str }
+  { "type": "head_launched", "instance_id": str }
+  { "type": "progress", "tasks_done": int, "tasks_total": int,
+                         "tasks_running": int, "queue_size": int,
+                         "concurrency_pct": float, "completion_pct": float,
+                         "ec2_cost_usd": float, "elapsed_seconds": float,
+                         "roda_gb": float, "fastq_gb": float,
+                         "expansion_ratio": float,
+                         "species_counts": dict }
+  { "type": "model",    "tier": str, "label": str, "state": "start"|"done",
+                         "usage"?: dict, "cost"?: float }
+  { "type": "insight",  "text": str }
+  { "type": "cost",     "total": float }
   { "type": "done" }
-  { "type": "error",      "message": str }
+  { "type": "error",    "message": str }
 """
 
 from __future__ import annotations
@@ -42,10 +44,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# ---------------------------------------------------------------------------
-# Config loading
-# ---------------------------------------------------------------------------
-
 if importlib.util.find_spec("config") is None:
     sys.exit("config.py not found — copy config.example.py to config.py and fill it in.")
 
@@ -59,8 +57,8 @@ _STATE: dict[str, Any] = {
     "status": "idle",  # idle | running | complete | error
     "run_id": None,
     "start_time": None,
-    "instance_ids": [],
-    "instance_statuses": {},
+    "head_instance_id": None,
+    "queue_size": 0,
     "progress": None,
     "summary": None,
     "error": None,
@@ -78,7 +76,6 @@ app = FastAPI(title="Microbiome Demo")
 _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-# Browser-open config: only open once on startup
 _launch_config: dict[str, Any] = {"url": None, "opened": False}
 
 
@@ -102,7 +99,7 @@ async def serve_index():
 
 @app.post("/api/start")
 async def start_run():
-    """Launch the spawn job array.  Idempotent: returns existing run_id if running."""
+    """Launch the Nextflow head instance.  Idempotent if already running."""
     with _STATE_LOCK:
         if _STATE["status"] == "running":
             return {"status": "already_running", "run_id": _STATE["run_id"]}
@@ -110,16 +107,13 @@ async def start_run():
         _STATE["status"] = "running"
         _STATE["run_id"] = f"run-{int(time.time())}"
         _STATE["start_time"] = time.time()
-        _STATE["instance_ids"] = []
-        _STATE["instance_statuses"] = {}
+        _STATE["head_instance_id"] = None
+        _STATE["queue_size"] = 0
         _STATE["progress"] = None
         _STATE["summary"] = None
         _STATE["error"] = None
 
-    # Run the pipeline in a background thread so the HTTP response returns quickly.
-    thread = threading.Thread(target=_run_pipeline, daemon=True)
-    thread.start()
-
+    threading.Thread(target=_run_pipeline, daemon=True).start()
     return {"status": "started", "run_id": _STATE["run_id"]}
 
 
@@ -129,6 +123,7 @@ async def get_status():
         return {
             "status": _STATE["status"],
             "run_id": _STATE["run_id"],
+            "queue_size": _STATE["queue_size"],
             "progress": _STATE["progress"],
         }
 
@@ -153,7 +148,6 @@ async def websocket_endpoint(ws: WebSocket):
     queue: asyncio.Queue = asyncio.Queue()
     _SUBSCRIBERS.append(queue)
 
-    # Send current status immediately on connect
     with _STATE_LOCK:
         status = _STATE["status"]
         progress = _STATE["progress"]
@@ -171,7 +165,6 @@ async def websocket_endpoint(ws: WebSocket):
                 event = await asyncio.wait_for(queue.get(), timeout=30)
                 await ws.send_text(json.dumps(event))
             except TimeoutError:
-                # Send a heartbeat so the browser knows we're alive
                 await ws.send_text(json.dumps({"type": "heartbeat"}))
     except WebSocketDisconnect:
         pass
@@ -180,7 +173,6 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 def _broadcast(event: dict) -> None:
-    """Thread-safe broadcast to all connected WebSocket clients."""
     for q in list(_SUBSCRIBERS):
         with contextlib.suppress(Exception):
             q.put_nowait(event)
@@ -192,89 +184,113 @@ def _broadcast(event: dict) -> None:
 
 
 def _run_pipeline() -> None:
-    """Launch workers, poll progress, synthesize results.  Runs in a daemon thread."""
-    from . import agent, pipeline, spawn, worker_script
+    from . import agent, nextflow_config, pipeline, spawn, truffle, worker_script
+    from .accessions import HMP_ACCESSIONS
 
     def emit(event: dict) -> None:
         _broadcast(event)
-        # Also update shared state for /api/status
         if event.get("type") == "progress":
             with _STATE_LOCK:
                 _STATE["progress"] = event
 
     try:
-        emit({"type": "phase", "label": "Preparing sample slices…"})
+        # ── 1. Query vCPU quotas via truffle ─────────────────────────────
+        emit({"type": "phase", "label": "Querying vCPU quotas via truffle…"})
 
-        # HMP accession list lives here in the app — no corpus staging needed.
-        # Workers pull SRA files directly from RODA (s3://sra-pub-run-odp/)
-        # using --no-sign-request; data never enters your bucket.
-        from .accessions import HMP_ACCESSIONS
+        families = list({t.split(".")[0] for t in nextflow_config.ALL_INSTANCE_TYPES})
+        quotas = truffle.query_quotas(cfg.REGION, families)
+        queue_size = truffle.derive_queue_size(quotas, nextflow_config.ALL_INSTANCE_TYPES)
+
+        with _STATE_LOCK:
+            _STATE["queue_size"] = queue_size
+
+        emit(
+            {
+                "type": "quota",
+                "queue_size": queue_size,
+                "summary": truffle.quota_summary(quotas, queue_size),
+            }
+        )
+
+        # ── 2. Upload SRR list and nextflow.config to S3 ─────────────────
+        emit({"type": "phase", "label": "Uploading SRR list and Nextflow config…"})
 
         sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
         accessions = HMP_ACCESSIONS[:sample_count]
 
-        # Upload tiny SRR list JSON files to S3 (accession numbers only, ~1 KB each).
-        slice_keys = worker_script.write_srr_slices(cfg, accessions)
-        emit({"type": "phase", "label": f"Uploaded {len(slice_keys)} SRR slice(s) to S3"})
+        srr_key = worker_script.write_srr_slice(cfg, accessions)
 
-        # Launch one worker per slice — each pulls its SRRs directly from RODA.
-        start_time = time.time()
-        workers: list[spawn.WorkerGroup] = []
-        for _i, skey in enumerate(slice_keys):
-            script_str = worker_script.render(cfg, skey)
-            script_path = worker_script.write_temp(script_str)
-            wg = spawn.launch_workers(cfg, script_path, emit=emit)
-            workers.append(wg)
-
-        all_instance_ids = [iid for wg in workers for iid in wg.instance_ids]
-        with _STATE_LOCK:
-            _STATE["instance_ids"] = all_instance_ids
+        nf_cfg_str = nextflow_config.render(cfg, queue_size)
+        nf_cfg_key = worker_script.upload_nextflow_config(cfg, nf_cfg_str)
 
         emit(
             {
-                "type": "workers_launched",
-                "count": len(all_instance_ids),
-                "instance_ids": all_instance_ids,
+                "type": "phase",
+                "label": f"Config ready — queueSize={queue_size}, {sample_count} samples",
             }
-        )
+        )  # noqa: E501
 
-        # Poll until all workers are done (or failed)
-        _poll_until_done(cfg, all_instance_ids, start_time, emit)
+        # ── 3. Launch Nextflow head instance ──────────────────────────────
+        emit({"type": "phase", "label": "Launching Nextflow head instance (t4g.small)…"})
 
-        # Synthesize insights via Bedrock
+        head_script = worker_script.render(cfg, nf_cfg_key, srr_key)
+        head_script_path = worker_script.write_temp(head_script)
+
+        # Head instance: small, just runs Nextflow + spawn CLI
+        head_cfg = _head_cfg(cfg)
+        wg = spawn.launch_workers(head_cfg, head_script_path, emit=emit)
+        head_id = wg.instance_ids[0] if wg.instance_ids else None
+        start_time = time.time()
+
+        with _STATE_LOCK:
+            _STATE["head_instance_id"] = head_id
+
+        emit({"type": "head_launched", "instance_id": head_id})
+
+        # ── 4. Poll progress until head completes ─────────────────────────
+        _poll_until_done(cfg, head_id, start_time, queue_size, emit)
+
+        # ── 5. Bedrock synthesis ──────────────────────────────────────────
         summary = pipeline.read_summary(cfg)
         if summary:
             with _STATE_LOCK:
                 _STATE["summary"] = summary
             agent.synthesize(summary, emit)
         else:
-            emit(
-                {
-                    "type": "error",
-                    "message": ("Pipeline completed but no summary.json found in S3."),
-                }
-            )
+            emit({"type": "error", "message": "Pipeline done but no summary.json found."})
 
         with _STATE_LOCK:
             _STATE["status"] = "complete"
 
     except Exception as exc:  # noqa: BLE001
-        error_msg = str(exc)
+        msg = str(exc)
         with _STATE_LOCK:
             _STATE["status"] = "error"
-            _STATE["error"] = error_msg
-        emit({"type": "error", "message": error_msg})
+            _STATE["error"] = msg
+        emit({"type": "error", "message": msg})
+
+
+def _head_cfg(base_cfg):
+    """Return a config-like object for the head instance (t4g.small)."""
+    import types
+
+    hc = types.SimpleNamespace(
+        **{k: getattr(base_cfg, k) for k in dir(base_cfg) if not k.startswith("_")}
+    )
+    hc.INSTANCE_TYPE = "t4g.small"
+    hc.INSTANCE_COUNT = 1
+    return hc
 
 
 def _poll_until_done(
     cfg,
-    instance_ids: list[str],
+    head_id: str | None,
     start_time: float,
+    queue_size: int,
     emit,
     poll_interval: int = 15,
     max_wait_minutes: int = 90,
 ) -> None:
-    """Poll spawn status and S3 progress until all instances are complete."""
     from . import pipeline, spawn
 
     max_polls = (max_wait_minutes * 60) // poll_interval
@@ -282,40 +298,52 @@ def _poll_until_done(
     for poll_num in range(max_polls):
         time.sleep(poll_interval)
 
-        instance_statuses = spawn.poll_workers(instance_ids)
-        with _STATE_LOCK:
-            _STATE["instance_statuses"] = instance_statuses
+        # Check head instance status
+        if head_id:
+            statuses = spawn.poll_workers([head_id])
+            head_status = statuses.get(head_id, "running")
+            if head_status == "failed":
+                emit({"type": "error", "message": "Head instance failed — check logs."})
+                return
+        else:
+            head_status = "running"
 
-        progress = pipeline.poll_progress(cfg, instance_ids, start_time, instance_statuses)
+        # Poll S3 progress.json
+        prog = pipeline.poll_progress(cfg, start_time, queue_size)
 
         emit(
             {
                 "type": "progress",
-                "completed": progress.completed_samples,
-                "total": progress.total_samples,
-                "running_instances": progress.running_instances,
-                "complete_instances": progress.complete_instances,
-                "failed_instances": progress.failed_instances,
-                "ec2_cost_usd": progress.ec2_cost_usd,
-                "elapsed_seconds": progress.elapsed_seconds,
-                "species_counts": progress.species_counts,
+                "tasks_done": prog.tasks_done,
+                "tasks_total": prog.tasks_total,
+                "tasks_running": prog.tasks_running,
+                "tasks_failed": prog.tasks_failed,
+                "queue_size": prog.queue_size,
+                "concurrency_pct": prog.concurrency_pct,
+                "completion_pct": prog.completion_pct,
+                "ec2_cost_usd": prog.ec2_cost_usd,
+                "elapsed_seconds": prog.elapsed_seconds,
+                # Data volumes from RODA
+                "roda_gb": prog.data.roda_gb,
+                "fastq_gb": prog.data.fastq_gb,
+                "expansion_ratio": prog.data.expansion_ratio,
+                "analysis_gb": prog.data.analysis_bytes_read / 1e9,
+                "species_counts": prog.species_counts,
             }
         )
 
-        all_done = all(s in ("complete", "failed") for s in instance_statuses.values())
-        if all_done:
-            emit({"type": "phase", "label": "All workers complete. Building summary…"})
+        if head_status == "complete":
+            emit({"type": "phase", "label": "Nextflow complete. Building summary…"})
             return
 
-        if (poll_num + 1) % 4 == 0:  # every minute
-            n_done = sum(1 for s in instance_statuses.values() if s == "complete")
+        if (poll_num + 1) % 4 == 0:
             emit(
                 {
                     "type": "phase",
                     "label": (
-                        f"{progress.completed_samples}/{progress.total_samples} samples done — "
-                        f"{n_done}/{len(instance_ids)} workers complete — "
-                        f"{progress.elapsed_seconds / 60:.1f} min elapsed"
+                        f"{prog.tasks_done}/{prog.tasks_total} tasks done · "
+                        f"{prog.tasks_running} running · "
+                        f"{prog.elapsed_seconds / 60:.1f} min elapsed"
                     ),
                 }
             )
