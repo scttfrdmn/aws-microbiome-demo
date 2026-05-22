@@ -83,7 +83,7 @@ src/microbiome_demo/
   app.py                FastAPI server: /ws WebSocket + /api/start + /api/results
   spawn.py              programmatic wrapper around the spawn CLI
   pipeline.py           poll S3 for Nextflow progress; compute EC2 cost
-  agent.py              Bedrock Sonnet synthesis of metagenomics results
+  agent.py              Bedrock Sonnet synthesis of microbiome analysis results
   worker_script.py      generates the cloud-init bash script for each EC2 instance
                         (pulls SRA files directly from RODA, no staging)
   static/index.html     Alpine.js live dashboard (no build step)

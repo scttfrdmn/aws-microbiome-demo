@@ -6,19 +6,15 @@ No AWS calls.  Tests focus on pure logic (cost calculation, elapsed formatting).
 
 from __future__ import annotations
 
-from microbiome_demo.pipeline import _fmt_elapsed, _instance_price
+from microbiome_demo.pipeline import DataVolume, _fmt_elapsed, _instance_price
 
 
 def test_instance_price_c7g():
-    """c7g.4xlarge should return the expected hourly rate."""
-    price = _instance_price("c7g.4xlarge")
-    assert abs(price - 0.6528) < 0.0001
+    assert abs(_instance_price("c7g.4xlarge") - 0.6528) < 0.0001
 
 
 def test_instance_price_fallback():
-    """Unknown instance types should fall back to c7g.4xlarge price."""
-    price = _instance_price("x9z.99xlarge")
-    assert price == _instance_price("c7g.4xlarge")
+    assert _instance_price("x9z.99xlarge") == _instance_price("c7g.4xlarge")
 
 
 def test_fmt_elapsed_seconds():
@@ -31,3 +27,19 @@ def test_fmt_elapsed_minutes():
 
 def test_fmt_elapsed_zero():
     assert _fmt_elapsed(0) == "0s"
+
+
+def test_data_volume_expansion_ratio():
+    dv = DataVolume(roda_bytes_read=1_000_000, fastq_bytes=3_500_000)
+    assert abs(dv.expansion_ratio - 3.5) < 0.001
+
+
+def test_data_volume_expansion_ratio_zero():
+    dv = DataVolume(roda_bytes_read=0, fastq_bytes=0)
+    assert dv.expansion_ratio == 0.0
+
+
+def test_data_volume_gb():
+    dv = DataVolume(roda_bytes_read=2_000_000_000, fastq_bytes=7_000_000_000)
+    assert abs(dv.roda_gb - 2.0) < 0.01
+    assert abs(dv.fastq_gb - 7.0) < 0.01
