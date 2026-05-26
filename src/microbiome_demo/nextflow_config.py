@@ -33,6 +33,7 @@ _TEMPLATE = """\
 
 plugins {{
     id 'nf-spawn@0.1.0'
+    id 'nf-amazon@2.8.0'   // required for s3:// workDir support
 }}
 
 process {{

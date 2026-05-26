@@ -212,7 +212,11 @@ def _run_pipeline() -> None:
             }
         )
 
-        # ── 2. Upload SRR list and nextflow.config to S3 ─────────────────
+        # ── 2. Ensure S3 bucket exists ────────────────────────────────────
+        emit({"type": "phase", "label": f"Ensuring S3 bucket s3://{cfg.BUCKET}…"})
+        _ensure_bucket(cfg)
+
+        # ── 3. Upload SRR list and nextflow.config to S3 ─────────────────
         emit({"type": "phase", "label": "Uploading SRR list and Nextflow config…"})
 
         sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
@@ -230,7 +234,7 @@ def _run_pipeline() -> None:
             }
         )  # noqa: E501
 
-        # ── 3. Launch Nextflow head instance ──────────────────────────────
+        # ── 4. Launch Nextflow head instance ──────────────────────────────
         emit({"type": "phase", "label": "Launching Nextflow head instance (t4g.small)…"})
 
         head_script = worker_script.render(cfg, nf_cfg_key, srr_key)
@@ -247,10 +251,10 @@ def _run_pipeline() -> None:
 
         emit({"type": "head_launched", "instance_id": head_id})
 
-        # ── 4. Poll progress until head completes ─────────────────────────
+        # ── 5. Poll progress until head completes ─────────────────────────
         _poll_until_done(cfg, head_id, start_time, queue_size, emit)
 
-        # ── 5. Bedrock synthesis ──────────────────────────────────────────
+        # ── 6. Bedrock synthesis ──────────────────────────────────────────
         summary = pipeline.read_summary(cfg)
         if summary:
             with _STATE_LOCK:
@@ -268,6 +272,30 @@ def _run_pipeline() -> None:
             _STATE["status"] = "error"
             _STATE["error"] = msg
         emit({"type": "error", "message": msg})
+
+
+def _ensure_bucket(cfg) -> None:
+    """Create the S3 bucket if it doesn't exist.
+
+    Safe to call on every run — BucketAlreadyOwnedByYou is silently ignored.
+    The bucket holds only small config files and result JSONs (not HMP data).
+    """
+    import boto3
+    from botocore.exceptions import ClientError
+
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    try:
+        if cfg.REGION == "us-east-1":
+            s3.create_bucket(Bucket=cfg.BUCKET)
+        else:
+            s3.create_bucket(
+                Bucket=cfg.BUCKET,
+                CreateBucketConfiguration={"LocationConstraint": cfg.REGION},
+            )
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+            raise
 
 
 def _head_cfg(base_cfg):

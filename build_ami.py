@@ -152,10 +152,18 @@ mkdir -p "${PLUGIN_DEST}"
 cp "${BUILT_JAR}" "${PLUGIN_DEST}/nf-spawn-${NF_SPAWN_VERSION}.jar"
 echo "nf-spawn installed: ${PLUGIN_DEST} (from $(basename ${BUILT_JAR}))"
 
+# --- nf-amazon plugin (required for s3:// workDir) -------------------------
+# Nextflow downloads plugins on first use; pre-cache it now so demo runs
+# don't need internet access or suffer a cold-start delay.
+# nf-amazon provides the S3 FileSystem implementation that lets Nextflow
+# use s3://bucket/work/ as the work directory between task instances.
+mkdir -p /opt/nextflow_cache
+NXF_HOME=/opt/nextflow_cache \\
+    /usr/local/bin/nextflow plugin install nf-amazon@2.8.0
+
 # --- Nextflow pipeline cache ------------------------------------------------
 # Pre-download the nf-core/taxprofiler pipeline so demo runs don't need
 # GitHub access or internet during the live demo.
-mkdir -p /opt/nextflow_cache
 NXF_HOME=/opt/nextflow_cache \\
     /usr/local/bin/nextflow pull nf-core/taxprofiler
 
@@ -224,9 +232,11 @@ def bake_ami(cfg) -> str:
             "--user-data-file",
             bake_script_path,
             "--ttl",
-            "2h",  # safety net
-            "--active-processes",
-            "nextflow,metaphlan,singularity",
+            "3h",  # bake takes 30-45 min; 3h gives plenty of headroom
+            # No --active-processes: we poll SPAWN_COMPLETE instead.
+            # Active-process detection can't match all bake steps (gradle,
+            # nextflow plugin install, wget) so we rely on the explicit
+            # completion signal at the end of the bake script.
             "--wait-for-ssh",
             "-o",
             "json",
