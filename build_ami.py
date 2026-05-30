@@ -203,8 +203,13 @@ def bake_ami(cfg) -> str:
     """
     import json
 
+    # Use c7g.4xlarge for the bake — 16 vCPU speeds up gradle, pip installs,
+    # and the Kraken2 database download.  Not configurable: the bake instance
+    # type is independent of the demo's head/task instance types.
+    bake_instance_type = "c7g.4xlarge"
+
     print("Launching bake instance via spawn...")
-    print(f"  Instance type: {cfg.INSTANCE_TYPE}")
+    print(f"  Instance type: {bake_instance_type}")
     print(f"  Region: {cfg.REGION}")
 
     # Write the bake script to a temp file
@@ -222,7 +227,7 @@ def bake_ami(cfg) -> str:
             "launch",
             "microbiome-bake",
             "--instance-type",
-            cfg.INSTANCE_TYPE,
+            bake_instance_type,
             "--region",
             cfg.REGION,
             "--ami",
