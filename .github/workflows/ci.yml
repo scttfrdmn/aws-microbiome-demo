@@ -12,6 +12,6 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
       - run: uv pip install -e ".[dev]" --system
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: pytest
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest

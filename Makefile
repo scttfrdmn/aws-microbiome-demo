@@ -9,6 +9,7 @@
 #   make install        install Python dependencies
 #   make ami            bake the pre-installed AMI (run once, ~45 min)
 #   make demo           start the live dashboard (opens browser)
+#   make demo-fake      rehearse the UI with no AWS calls (DEMO_FAKE=1)
 #   make teardown       clean up all AWS resources after the talk
 #   make lint           ruff check + format
 #   make test           run the test suite
@@ -16,7 +17,7 @@
 # Note: there is no corpus staging step.  Workers pull HMP data directly
 # from the SRA Open Data bucket (RODA) at analysis time — no copying needed.
 
-.PHONY: install ami demo teardown lint lint-fix test clean
+.PHONY: install ami demo demo-fake teardown lint lint-fix test clean
 
 # Use uv for all Python invocations
 PYTHON := uv run python
@@ -30,6 +31,9 @@ ami:
 
 demo:
 	AWS_PROFILE=aws $(PYTHON) -m microbiome_demo.app
+
+demo-fake:
+	DEMO_FAKE=1 $(PYTHON) -m microbiome_demo.app
 
 teardown:
 	AWS_PROFILE=aws $(PYTHON) teardown.py
