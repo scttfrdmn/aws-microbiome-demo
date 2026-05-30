@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 import webbrowser
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -97,20 +98,22 @@ _STATE_LOCK = threading.Lock()
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Microbiome Demo")
-
-_STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-
 _launch_config: dict[str, Any] = {"url": None, "opened": False}
 
 
-@app.on_event("startup")
-async def _open_browser() -> None:
+@asynccontextmanager
+async def _lifespan(application: FastAPI):  # noqa: ARG001
     url = _launch_config.get("url")
     if url and not _launch_config["opened"]:
         _launch_config["opened"] = True
         webbrowser.open(url)
+    yield
+
+
+app = FastAPI(title="Microbiome Demo", lifespan=_lifespan)
+
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 # ---------------------------------------------------------------------------
