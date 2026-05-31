@@ -219,9 +219,12 @@ def bake_ami(cfg) -> str:
         f.write(_BAKE_SCRIPT)
         bake_script_path = f.name
 
-    # Launch via spawn: ARM64 AL2023, with enough EBS for the databases
-    # (~50 GB: 16 GB Kraken2 + 2 GB MetaPhlAn + OS + images)
-    result = subprocess.run(
+    # Launch via spawn: ARM64 AL2023, 80 GB EBS (requires spawn >= 0.36.3).
+    # Notes:
+    #   - --ami omitted: spawn auto-detects latest AL2023 for the region/arch
+    #   - -o json omitted: spawn's TUI overrides it and outputs ANSI progress,
+    #     not JSON; we use `spawn list -o json` after launch to find the instance
+    subprocess.run(
         [
             "spawn",
             "launch",
@@ -230,34 +233,43 @@ def bake_ami(cfg) -> str:
             bake_instance_type,
             "--region",
             cfg.REGION,
-            "--ami",
-            "auto",  # latest AL2023 ARM64
             "--volume-size",
-            "80",  # GB EBS
+            "80",
             "--user-data-file",
             bake_script_path,
             "--ttl",
-            "3h",  # bake takes 30-45 min; 3h gives plenty of headroom
-            # No --active-processes: we poll SPAWN_COMPLETE instead.
-            # Active-process detection can't match all bake steps (gradle,
-            # nextflow plugin install, wget) so we rely on the explicit
-            # completion signal at the end of the bake script.
+            "3h",
             "--wait-for-ssh",
-            "-o",
-            "json",
-            "-y",  # skip cost confirmation
+            "-y",
         ],
-        capture_output=True,
-        text=True,
         check=False,
     )
 
-    if result.returncode != 0:
-        print(f"spawn launch failed: {result.stderr[:500]}")
-        sys.exit(1)
+    # Look up the instance by name via `spawn list -o json`.
+    print("  Looking up instance ID via spawn list...")
+    instance_id = None
+    for _ in range(10):
+        list_result = subprocess.run(
+            ["spawn", "list", "-o", "json"],
+            capture_output=True, text=True, check=False,
+        )
+        try:
+            instances = json.loads(list_result.stdout)
+            if not isinstance(instances, list):
+                instances = [instances]
+            for inst in instances:
+                if inst.get("name") == "microbiome-bake":
+                    instance_id = inst.get("instance_id") or inst.get("InstanceId")
+                    break
+        except (json.JSONDecodeError, KeyError):
+            pass
+        if instance_id:
+            break
+        time.sleep(5)
 
-    launch_data = json.loads(result.stdout)
-    instance_id = launch_data.get("instance_id") or launch_data.get("InstanceId")
+    if not instance_id:
+        print("  Could not find microbiome-bake instance via spawn list.")
+        sys.exit(1)
     print(f"\n  Instance launched: {instance_id}")
     print("  Installing Nextflow, databases, Singularity images...")
     print("  This takes ~30-45 minutes.  Grab a coffee.\n")
