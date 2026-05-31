@@ -53,10 +53,6 @@ echo "=== Microbiome Demo — Head Node ==="
 echo "Started: $(date)"
 echo "Instance: $(curl -sf http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
 
-# This script is delivered via spawn's --command flag (not --user-data-file),
-# which means it runs AFTER the spored agent has fully installed.
-# No bootstrap wait needed.
-
 BUCKET="@@BUCKET@@"
 REGION="@@REGION@@"
 JOB_NAME="@@JOB_NAME@@"
