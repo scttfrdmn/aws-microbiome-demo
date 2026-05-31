@@ -52,6 +52,17 @@ exec > /var/log/ami-bake.log 2>&1
 echo "=== Microbiome Demo AMI Bake ==="
 echo "Started: $(date)"
 
+# Upload log to S3 on EXIT (success or failure) so we can diagnose failures
+# even after the instance terminates.  Bucket must exist before bake starts.
+BAKE_BUCKET="scttfrdmn-microbiome-demo"
+BAKE_REGION="us-east-1"
+upload_log() {
+    aws s3 cp /var/log/ami-bake.log \\
+        "s3://${BAKE_BUCKET}/bake-logs/ami-bake-$(date +%Y%m%d-%H%M%S).log" \\
+        --region "${BAKE_REGION}" 2>/dev/null || true
+}
+trap upload_log EXIT
+
 # --- System packages --------------------------------------------------------
 dnf update -y
 dnf install -y \\
@@ -210,6 +221,19 @@ def bake_ami(cfg) -> str:
     Returns the new AMI ID (also printed for pasting into config.py).
     """
     import json
+
+    from botocore.exceptions import ClientError
+
+    # Ensure the S3 bucket exists — the bake script uploads its log there on exit.
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    try:
+        s3.create_bucket(Bucket=cfg.BUCKET)
+        print(f"  Created bucket: s3://{cfg.BUCKET}")
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+            raise
+        print(f"  Bucket exists: s3://{cfg.BUCKET}")
 
     # Use c7g.4xlarge for the bake — 16 vCPU speeds up gradle, pip installs,
     # and the Kraken2 database download.  Not configurable: the bake instance
