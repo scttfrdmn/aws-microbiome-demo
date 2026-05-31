@@ -53,17 +53,9 @@ echo "=== Microbiome Demo — Head Node ==="
 echo "Started: $(date)"
 echo "Instance: $(curl -sf http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
 
-# The spawn bootstrap installs spored concurrently with user-data execution.
-# If this script starts while spored is mid-install, the spored install
-# fails ("Text file busy") and cloud-init marks the whole user-data as
-# failed.  We avoid this by sleeping briefly — by the time we wake up
-# spored is installed and not being written to.
-# A 30-second sleep is sufficient: the instance is already "SSH ready"
-# (spawn's --wait-for-ssh already waited for that), and spored's install
-# takes < 10 seconds from that point.
-echo "Waiting 30s for spawn bootstrap to settle before starting pipeline..."
-sleep 30
-echo "Bootstrap wait done: $(date)"
+# This script is delivered via spawn's --command flag (not --user-data-file),
+# which means it runs AFTER the spored agent has fully installed.
+# No bootstrap wait needed.
 
 BUCKET="@@BUCKET@@"
 REGION="@@REGION@@"
