@@ -71,6 +71,17 @@ def launch_workers(
 
     volume_size = getattr(cfg, "VOLUME_SIZE", 0)  # 0 = use AMI default
 
+    # Use --command instead of --user-data-file so the script runs AFTER
+    # spored finishes installing (workaround for spore-host/spawn#27 where
+    # user-data races with the spored bootstrap and fails with "Text file busy").
+    # The script is uploaded to S3; --command fetches and executes it.
+    script_s3_key = f"scripts/{cfg.JOB_NAME}/head.sh"
+    _upload_script(cfg, user_data_path, script_s3_key)
+    run_cmd = (
+        f"aws s3 cp s3://{cfg.BUCKET}/{script_s3_key} /tmp/head.sh "
+        f"--region {cfg.REGION} && bash /tmp/head.sh"
+    )
+
     cmd = [
         "spawn",
         "launch",
@@ -81,14 +92,12 @@ def launch_workers(
         cfg.REGION,
         "--ami",
         cfg.AMI_ID,
-        "--user-data-file",
-        user_data_path,
+        "--command",
+        run_cmd,
         "--ttl",
         cfg.INSTANCE_TTL,
         "--wait-for-ssh",
-        # -o json omitted: spawn's TUI overrides it and outputs ANSI progress
-        # rather than JSON (spore-host/spawn#21).  We look up the instance by
-        # name after launch via `spawn list -o json` instead.
+        # -o json omitted: spawn's TUI overrides it (spore-host/spawn#21)
         "-y",
     ]
     if volume_size:
@@ -141,6 +150,15 @@ def poll_workers(instance_ids: list[str]) -> dict[str, str]:
         else:
             statuses[iid] = "unknown"
     return statuses
+
+
+def _upload_script(cfg, local_path: str, s3_key: str) -> None:
+    """Upload a local script to S3 so --command can fetch it."""
+    import boto3
+
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    with open(local_path, "rb") as f:
+        s3.put_object(Bucket=cfg.BUCKET, Key=s3_key, Body=f.read())
 
 
 def _find_instances_by_name(job_name: str, expected: int = 1, retries: int = 12) -> list[str]:
