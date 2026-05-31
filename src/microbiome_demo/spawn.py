@@ -71,17 +71,6 @@ def launch_workers(
 
     volume_size = getattr(cfg, "VOLUME_SIZE", 0)  # 0 = use AMI default
 
-    # Use --command instead of --user-data-file so the script runs AFTER
-    # spored finishes installing (workaround for spore-host/spawn#27 where
-    # user-data races with the spored bootstrap and fails with "Text file busy").
-    # The script is uploaded to S3; --command fetches and executes it.
-    script_s3_key = f"scripts/{cfg.JOB_NAME}/head.sh"
-    _upload_script(cfg, user_data_path, script_s3_key)
-    run_cmd = (
-        f"aws s3 cp s3://{cfg.BUCKET}/{script_s3_key} /tmp/head.sh "
-        f"--region {cfg.REGION} && bash /tmp/head.sh"
-    )
-
     cmd = [
         "spawn",
         "launch",
@@ -92,12 +81,12 @@ def launch_workers(
         cfg.REGION,
         "--ami",
         cfg.AMI_ID,
-        "--command",
-        run_cmd,
+        "--user-data-file",
+        user_data_path,
         "--ttl",
         cfg.INSTANCE_TTL,
         "--wait-for-ssh",
-        # -o json omitted: spawn's TUI overrides it (spore-host/spawn#21)
+        "-o", "json",   # stdout = clean JSON array; stderr = audit logs
         "-y",
     ]
     if volume_size:
@@ -106,13 +95,31 @@ def launch_workers(
     if count > 1:
         cmd.extend(["--count", str(count)])
 
-    result = subprocess.run(cmd, check=False)
+    # Capture stdout only — stderr contains audit log JSON and pricing lines
+    # which are not parseable as the launch result (spore-host/spawn#21).
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
-        raise RuntimeError(f"spawn launch failed (exit {result.returncode})")
+        raise RuntimeError(
+            f"spawn launch failed (exit {result.returncode}): {result.stderr[:300]}"
+        )
 
-    # Look up the launched instance(s) by job name.
-    instance_ids = _find_instances_by_name(cfg.JOB_NAME, expected=count)
+    # stdout is a clean JSON array: [{"instance_id": "i-...", "name": "...", ...}]
+    try:
+        data = json.loads(result.stdout)
+        if not isinstance(data, list):
+            data = [data]
+        instance_ids = [
+            d.get("instance_id") or d.get("InstanceId")
+            for d in data
+            if d.get("instance_id") or d.get("InstanceId")
+        ]
+    except (json.JSONDecodeError, KeyError):
+        # Fallback: look up by name if stdout parse fails
+        instance_ids = _find_instances_by_name(cfg.JOB_NAME, expected=count)
+
+    if not instance_ids:
+        instance_ids = _find_instances_by_name(cfg.JOB_NAME, expected=count)
 
     if emit:
         emit(
