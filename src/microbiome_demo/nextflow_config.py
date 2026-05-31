@@ -36,8 +36,14 @@ plugins {{
     id 'nf-amazon@2.8.0'   // required for s3:// workDir support
 }}
 
+docker {{
+    enabled = true
+    runOptions = '--user root'
+}}
+
 process {{
     executor = 'spawn'
+    container = 'nfcore/taxprofiler:latest'
 
     // Per-label instance types — sized for the actual workload.
     withLabel: 'process_single' {{ ext.instanceType = '{inst_single}' }}
