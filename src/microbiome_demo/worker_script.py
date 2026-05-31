@@ -53,12 +53,17 @@ echo "=== Microbiome Demo — Head Node ==="
 echo "Started: $(date)"
 echo "Instance: $(curl -sf http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
 
-# Wait for cloud-init and spored to finish installing before proceeding.
-# Without this, our script races with spored's own install and the
-# "Text file busy" error causes cloud-init to mark our script as failed.
-echo "Waiting for cloud-init to complete..."
-cloud-init status --wait 2>/dev/null || true
-echo "cloud-init done: $(date)"
+# The spawn bootstrap installs spored concurrently with user-data execution.
+# If this script starts while spored is mid-install, the spored install
+# fails ("Text file busy") and cloud-init marks the whole user-data as
+# failed.  We avoid this by sleeping briefly — by the time we wake up
+# spored is installed and not being written to.
+# A 30-second sleep is sufficient: the instance is already "SSH ready"
+# (spawn's --wait-for-ssh already waited for that), and spored's install
+# takes < 10 seconds from that point.
+echo "Waiting 30s for spawn bootstrap to settle before starting pipeline..."
+sleep 30
+echo "Bootstrap wait done: $(date)"
 
 BUCKET="@@BUCKET@@"
 REGION="@@REGION@@"
