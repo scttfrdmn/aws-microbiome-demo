@@ -25,6 +25,7 @@ SAMPLE_COUNT = 100
 # Singularity image, Kraken2 k2_pluspf_16GB database, MetaPhlAn 4,
 # spawn CLI, and the nf-spawn Nextflow executor plugin.
 AMI_ID = ""
+VOLUME_SIZE = 80  # GB — must be >= AMI root snapshot size (80 for the baked AMI)
 
 # --- Nextflow head instance -------------------------------------------------
 # A small instance that runs Nextflow + nf-spawn to orchestrate the pipeline.
