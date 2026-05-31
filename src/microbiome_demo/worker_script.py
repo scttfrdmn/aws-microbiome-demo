@@ -53,6 +53,13 @@ echo "=== Microbiome Demo — Head Node ==="
 echo "Started: $(date)"
 echo "Instance: $(curl -sf http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
 
+# Wait for cloud-init and spored to finish installing before proceeding.
+# Without this, our script races with spored's own install and the
+# "Text file busy" error causes cloud-init to mark our script as failed.
+echo "Waiting for cloud-init to complete..."
+cloud-init status --wait 2>/dev/null || true
+echo "cloud-init done: $(date)"
+
 BUCKET="@@BUCKET@@"
 REGION="@@REGION@@"
 JOB_NAME="@@JOB_NAME@@"

@@ -141,6 +141,20 @@ def read_summary(cfg) -> dict[str, Any] | None:
     return _safe_get(s3, cfg.BUCKET, f"results/{cfg.JOB_NAME}/summary.json")
 
 
+def is_pipeline_complete(cfg) -> bool:
+    """Return True if the head node has written a complete status to S3.
+
+    Workaround for spore-host/spawn#26 where --check-complete returns 0
+    before SPAWN_COMPLETE exists.  We instead check progress.json which
+    the head node monitor writes with status="complete" when Nextflow exits.
+    """
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    prog = _safe_get(s3, cfg.BUCKET, f"results/{cfg.JOB_NAME}/progress.json")
+    if prog is None:
+        return False
+    return prog.get("status") == "complete"
+
+
 def _safe_get(s3, bucket: str, key: str) -> dict | None:
     try:
         resp = s3.get_object(Bucket=bucket, Key=key)

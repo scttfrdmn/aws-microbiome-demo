@@ -143,14 +143,15 @@ def main() -> None:
     for poll in range(max_polls):
         time.sleep(15)
 
+        # Use S3 progress.json for completion detection (workaround for spawn#26).
+        pipeline_done = pipeline.is_pipeline_complete(cfg)
+
         if head_id:
             statuses = spawn.poll_workers([head_id])
             head_status = statuses.get(head_id, "running")
             if head_status == "failed":
                 emit({"type": "error", "message": "Head instance failed."})
                 sys.exit(1)
-        else:
-            head_status = "running"
 
         prog = pipeline.poll_progress(cfg, start_time, queue_size)
         emit({
@@ -164,7 +165,7 @@ def main() -> None:
             "fastq_gb":        prog.data.fastq_gb,
         })
 
-        if head_status == "complete":
+        if pipeline_done:
             emit({"type": "phase", "label": "Nextflow complete. Building summary…"})
             break
 

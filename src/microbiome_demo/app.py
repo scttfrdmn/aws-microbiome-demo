@@ -558,6 +558,11 @@ def _poll_until_done(
     for poll_num in range(max_polls):
         time.sleep(poll_interval)
 
+        # Check completion via S3 progress.json (workaround for spawn#26 where
+        # --check-complete returns 0 before SPAWN_COMPLETE exists).
+        pipeline_done = pipeline.is_pipeline_complete(config)
+
+        # Also check if the instance has failed or disappeared.
         if head_id:
             statuses = spawn.poll_workers([head_id])
             head_status = statuses.get(head_id, "running")
@@ -589,7 +594,7 @@ def _poll_until_done(
             }
         )
 
-        if head_status == "complete":
+        if pipeline_done:
             emit({"type": "phase", "label": "Nextflow complete. Building summary…"})
             return
 
