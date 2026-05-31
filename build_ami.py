@@ -295,7 +295,7 @@ def bake_ami(cfg) -> str:
     print("  Waiting for bake to complete (polling every 60s)...")
     ec2 = boto3.client("ec2", region_name=cfg.REGION)
 
-    for attempt in range(60):  # up to 60 minutes
+    for attempt in range(120):  # up to 120 minutes
         time.sleep(60)
         status_result = subprocess.run(
             ["spawn", "status", instance_id, "--check-complete"],
@@ -312,7 +312,7 @@ def bake_ami(cfg) -> str:
         if (attempt + 1) % 5 == 0:
             print(f"  Still running... ({attempt + 1} min elapsed)")
     else:
-        print("  Bake timed out after 60 minutes — check instance logs")
+        print("  Bake timed out after 120 minutes — check instance logs")
         sys.exit(1)
 
     # Create the AMI from the stopped instance
