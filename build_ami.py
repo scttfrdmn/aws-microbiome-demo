@@ -56,13 +56,30 @@ echo "Started: $(date)"
 dnf update -y
 dnf install -y \\
     java-21-amazon-corretto \\
-    singularity \\
     docker \\
     git \\
     wget \\
     pigz \\
     parallel \\
-    htop
+    htop \\
+    squashfs-tools \\
+    fuse \\
+    fuse-libs
+
+# Start Docker (required for nf-core containers)
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+# --- Apptainer (Singularity successor) --------------------------------------
+# Singularity is not in AL2023 repos; install Apptainer from GitHub releases.
+# We use the pre-built RPM for aarch64 (AL2023 is RHEL-compatible).
+APPTAINER_VER="1.3.6"
+cd /tmp
+wget -q "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer-${APPTAINER_VER}-1.aarch64.rpm"
+dnf install -y "apptainer-${APPTAINER_VER}-1.aarch64.rpm"
+# Create singularity symlink so nf-core pipelines find it
+ln -sf /usr/bin/apptainer /usr/local/bin/singularity
+singularity --version
 
 # --- SRA Toolkit  -----------------------------------------------------------
 # ARM64 (aarch64) build — the AMI is Graviton3, not x86_64.
