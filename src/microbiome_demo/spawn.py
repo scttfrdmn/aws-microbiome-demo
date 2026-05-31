@@ -69,6 +69,8 @@ def launch_workers(
     if emit:
         emit({"type": "phase", "label": f"Launching {label} ({cfg.INSTANCE_TYPE})…"})
 
+    volume_size = getattr(cfg, "VOLUME_SIZE", 0)  # 0 = use AMI default
+
     cmd = [
         "spawn",
         "launch",
@@ -89,6 +91,8 @@ def launch_workers(
         # name after launch via `spawn list -o json` instead.
         "-y",
     ]
+    if volume_size:
+        cmd.extend(["--volume-size", str(volume_size)])
     # Only pass --count for arrays; omit for single instances.
     if count > 1:
         cmd.extend(["--count", str(count)])
