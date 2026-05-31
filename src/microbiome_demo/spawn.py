@@ -84,28 +84,22 @@ def launch_workers(
         "--ttl",
         cfg.INSTANCE_TTL,
         "--wait-for-ssh",
-        "-o",
-        "json",
+        # -o json omitted: spawn's TUI overrides it and outputs ANSI progress
+        # rather than JSON (spore-host/spawn#21).  We look up the instance by
+        # name after launch via `spawn list -o json` instead.
         "-y",
     ]
     # Only pass --count for arrays; omit for single instances.
     if count > 1:
         cmd.extend(["--count", str(count)])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, check=False)
 
     if result.returncode != 0:
-        raise RuntimeError(f"spawn launch failed: {result.stderr[:500]}")
+        raise RuntimeError(f"spawn launch failed (exit {result.returncode})")
 
-    data = json.loads(result.stdout)
-
-    # spawn returns a list for job arrays, a single dict for single instances.
-    if isinstance(data, list):
-        instance_ids = [d.get("instance_id") or d.get("InstanceId") for d in data]
-    else:
-        instance_ids = [data.get("instance_id") or data.get("InstanceId")]
-
-    instance_ids = [i for i in instance_ids if i]
+    # Look up the launched instance(s) by job name.
+    instance_ids = _find_instances_by_name(cfg.JOB_NAME, expected=count)
 
     if emit:
         emit(
@@ -143,6 +137,36 @@ def poll_workers(instance_ids: list[str]) -> dict[str, str]:
         else:
             statuses[iid] = "unknown"
     return statuses
+
+
+def _find_instances_by_name(job_name: str, expected: int = 1, retries: int = 12) -> list[str]:
+    """Poll `spawn list -o json` until we find `expected` instances named job_name.
+
+    Workaround for spore-host/spawn#21: `spawn launch -o json` emits log lines
+    rather than a parseable instance JSON, so we look up instances by name after
+    launch instead of parsing stdout.
+
+    Args:
+        job_name: the name passed to spawn launch.
+        expected: number of instances to find (1 for head node, N for arrays).
+        retries:  number of 5-second polling attempts before giving up.
+
+    Returns:
+        List of instance_id strings (may be shorter than expected on timeout).
+    """
+    import time
+
+    for _ in range(retries):
+        found = list_workers(job_name)
+        ids = [
+            d.get("instance_id") or d.get("InstanceId")
+            for d in found
+            if d.get("instance_id") or d.get("InstanceId")
+        ]
+        if len(ids) >= expected:
+            return ids[:expected]
+        time.sleep(5)
+    return []
 
 
 def list_workers(job_name: str) -> list[dict]:
