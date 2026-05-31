@@ -17,7 +17,7 @@
 # Note: there is no corpus staging step.  Workers pull HMP data directly
 # from the SRA Open Data bucket (RODA) at analysis time — no copying needed.
 
-.PHONY: install ami demo demo-fake teardown lint lint-fix test clean
+.PHONY: install ami demo demo-fake demo-headless teardown lint lint-fix test clean
 
 # Use uv for all Python invocations
 PYTHON := uv run python
@@ -34,6 +34,9 @@ demo:
 
 demo-fake:
 	DEMO_FAKE=1 $(PYTHON) -m microbiome_demo.app
+
+demo-headless:
+	AWS_PROFILE=aws $(PYTHON) run_headless.py
 
 teardown:
 	AWS_PROFILE=aws $(PYTHON) teardown.py
