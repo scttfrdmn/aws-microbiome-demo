@@ -70,16 +70,10 @@ dnf install -y \\
 systemctl enable --now docker
 usermod -aG docker ec2-user
 
-# --- Apptainer (Singularity successor) --------------------------------------
-# Singularity is not in AL2023 repos; install Apptainer from GitHub releases.
-# We use the pre-built RPM for aarch64 (AL2023 is RHEL-compatible).
-APPTAINER_VER="1.3.6"
-cd /tmp
-wget -q "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer-${APPTAINER_VER}-1.aarch64.rpm"
-dnf install -y "apptainer-${APPTAINER_VER}-1.aarch64.rpm"
-# Create singularity symlink so nf-core pipelines find it
-ln -sf /usr/bin/apptainer /usr/local/bin/singularity
-singularity --version
+# Note: Singularity/Apptainer has no pre-built ARM64/aarch64 RPM.
+# We use Docker instead — nf-core/taxprofiler fully supports Docker,
+# and Docker is the standard container runtime on AL2023.
+docker --version
 
 # --- SRA Toolkit  -----------------------------------------------------------
 # ARM64 (aarch64) build — the AMI is Graviton3, not x86_64.
@@ -99,13 +93,10 @@ wget -q https://get.nextflow.io -O nextflow
 chmod +x nextflow
 ./nextflow self-update  # pull latest stable version
 
-# --- nf-core/taxprofiler Singularity image ----------------------------------
+# --- nf-core/taxprofiler Docker image ---------------------------------------
 # Pre-pull so demo instances don't download it at runtime.
-mkdir -p /opt/singularity/images
-cd /opt/singularity/images
-singularity pull --force \\
-    nf-core-taxprofiler-latest.sif \\
-    docker://nfcore/taxprofiler:latest
+# Using Docker (not Singularity) — no ARM64 Apptainer RPM is available.
+docker pull nfcore/taxprofiler:latest
 
 # --- Kraken2 k2_pluspf_16_GB database ---------------------------------------
 # 11.9 GB compressed → ~16 GB uncompressed.  Stored in /opt/databases so
