@@ -61,8 +61,11 @@ SRR_LIST_KEY="@@SRR_LIST_KEY@@"
 RESULTS_PREFIX="s3://${BUCKET}/results/${JOB_NAME}"
 PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 
+# ── Ensure PATH includes tool install locations ──────────────────────────────
+export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
+
 # ── Prerequisites check ──────────────────────────────────────────────────────
-command -v nextflow || { echo "ERROR: nextflow not found on PATH"; exit 1; }
+command -v nextflow || { echo "ERROR: nextflow not found at /usr/local/bin/nextflow"; exit 1; }
 command -v spawn    || { echo "ERROR: spawn not found on PATH"; exit 1; }
 test -f /opt/databases/kraken2/hash.k2d \
     || { echo "ERROR: Kraken2 database missing — was the AMI baked?"; exit 1; }
