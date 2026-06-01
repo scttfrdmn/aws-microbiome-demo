@@ -12,7 +12,7 @@ What the AMI contains:
   - Nextflow 24.x  (the workflow engine)
   - nf-core/taxprofiler (pulled at pipeline runtime via Docker)
   - Kraken2 k2_pluspf_16_GB database  (11.9 GB, pre-staged on EBS)
-  - MetaPhlAn 4 + its marker gene database
+  - MetaPhlAn 4 (runs in nf-core/taxprofiler Docker container, no host install)
   - SRA Toolkit  (converts .sra → FASTQ on-the-fly)
   - spored agent  (Spawn's termination daemon, auto-installed by spawn launch)
 
@@ -116,16 +116,10 @@ echo "Extracting Kraken2 database..."
 tar -xzf k2_pluspf_16_GB_20260226.tar.gz
 rm k2_pluspf_16_GB_20260226.tar.gz
 
-# --- MetaPhlAn 4 + marker gene database ------------------------------------
-dnf install -y python3-pip bowtie2
-python3 -m pip install metaphlan
-# Add pip-installed scripts to PATH
-export PATH="${PATH}:/usr/local/bin:$(python3 -m site --user-base)/bin"
-which metaphlan || ln -sf $(python3 -c "import metaphlan; import os; print(os.path.dirname(metaphlan.__file__))")/metaphlan.py /usr/local/bin/metaphlan
-# Pre-download the MetaPhlAn marker gene database (~2 GB)
-mkdir -p /opt/databases/metaphlan
-python3 -m metaphlan --install --bowtie2db /opt/databases/metaphlan \\
-    --nproc 4 2>&1
+# Note: MetaPhlAn 4 runs inside the nf-core/taxprofiler Docker container.
+# No host install needed — Docker pulls the container at pipeline runtime.
+# The MetaPhlAn marker gene database (~2 GB) is downloaded by nf-core on
+# first use and cached in the Nextflow work directory.
 
 # --- spawn CLI --------------------------------------------------------------
 # The head node uses spawn to launch task instances via nf-spawn.
