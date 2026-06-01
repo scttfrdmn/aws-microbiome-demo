@@ -97,10 +97,10 @@ wget -q --timeout=120 https://get.nextflow.io -O nextflow
 chmod +x nextflow
 ./nextflow self-update  # pull latest stable version
 
-# --- nf-core/taxprofiler Docker image ---------------------------------------
-# Pre-pull so demo instances don't download it at runtime.
-# Using Docker (not Singularity) — no ARM64 Apptainer RPM is available.
-docker pull nfcore/taxprofiler:latest
+# Note: nf-core/taxprofiler Docker image is NOT pre-pulled here.
+# Nextflow pulls it automatically on first use from Docker Hub.
+# Pre-pulling would require `docker login` which we avoid on bake instances.
+echo "Docker ready — nfcore/taxprofiler will be pulled at pipeline runtime"
 
 # --- Kraken2 k2_pluspf_16_GB database ---------------------------------------
 # 11.9 GB compressed → ~16 GB uncompressed.  Stored in /opt/databases so
