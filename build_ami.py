@@ -122,20 +122,15 @@ rm k2_pluspf_16_GB_20260226.tar.gz
 # first use and cached in the Nextflow work directory.
 
 # --- spawn CLI --------------------------------------------------------------
-# The head node uses spawn to launch task instances via nf-spawn.
-# Install via the spore-host homebrew tap (ARM64 binary).
-curl -fsSL https://raw.githubusercontent.com/spore-host/homebrew-tap/main/install.sh \
-    | bash 2>&1 || true
-# Fallback: direct binary install if brew isn't available on AL2023
-if ! command -v spawn &>/dev/null; then
-    SPAWN_VER=$(curl -sf https://api.github.com/repos/spore-host/spore-host/releases/latest \
-        | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null \
-        || echo "v0.34.14")
-    curl -fsSL \
-        "https://github.com/spore-host/spore-host/releases/download/${SPAWN_VER}/spawn_linux_arm64.tar.gz" \
-        | tar -xz -C /usr/local/bin spawn
-fi
-spawn --version
+# Install from spore-host/spawn GitHub releases (ARM64 RPM for AL2023).
+# Releases live at github.com/spore-host/spawn, not spore-host/spore-host.
+SPAWN_VER=$(curl -sf https://api.github.com/repos/spore-host/spawn/releases/latest \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))" 2>/dev/null \
+    || echo "0.36.6")
+curl -fsSL --output /tmp/spawn.rpm \
+    "https://github.com/spore-host/spawn/releases/download/v${SPAWN_VER}/spawn_${SPAWN_VER}_linux_arm64.rpm"
+dnf install -y /tmp/spawn.rpm
+spawn version
 
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
 # Clones the pinned v0.1.0 tag, builds the JAR, and installs it into the
