@@ -117,7 +117,7 @@ tar -xzf k2_pluspf_16_GB_20260226.tar.gz
 rm k2_pluspf_16_GB_20260226.tar.gz
 
 # --- MetaPhlAn 4 + marker gene database ------------------------------------
-pip3 install metaphlan
+python3 -m pip install metaphlan
 # Pre-download the MetaPhlAn marker gene database (~2 GB)
 mkdir -p /opt/databases/metaphlan
 metaphlan --install --bowtie2db /opt/databases/metaphlan \\
