@@ -86,21 +86,14 @@ usermod -aG docker ec2-user
 # and Docker is the standard container runtime on AL2023.
 docker --version
 
-# --- SRA Toolkit  -----------------------------------------------------------
-# ARM64 (aarch64) build — the AMI is Graviton3, not x86_64.
-# fasterq-dump converts SRA files to FASTQ on the task instances.
-cd /tmp
-wget -q https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-centos_linux64-aarch64.tar.gz
-tar -xzf sratoolkit.current-centos_linux64-aarch64.tar.gz
-cp sratoolkit.*/bin/fasterq-dump /usr/local/bin/
-cp sratoolkit.*/bin/prefetch      /usr/local/bin/
-cp sratoolkit.*/bin/vdb-config    /usr/local/bin/
-fasterq-dump --version
+# Note: SRA Toolkit is NOT installed separately.
+# nf-core/taxprofiler runs fasterq-dump inside its Docker container,
+# so it's bundled in the nfcore/taxprofiler:latest image pulled below.
 
 # --- Nextflow ---------------------------------------------------------------
 mkdir -p /usr/local/bin
 cd /usr/local/bin
-wget -q https://get.nextflow.io -O nextflow
+wget -q --timeout=120 https://get.nextflow.io -O nextflow
 chmod +x nextflow
 ./nextflow self-update  # pull latest stable version
 
