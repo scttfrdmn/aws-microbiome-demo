@@ -67,6 +67,7 @@ trap upload_log EXIT
 dnf update -y
 dnf install -y \\
     java-21-amazon-corretto \\
+    gradle \\
     docker \\
     git \\
     wget \\
@@ -144,6 +145,10 @@ cd /opt/nf-spawn
 git clone --depth 1 --branch "v${NF_SPAWN_VERSION}" \
     https://github.com/spore-host/nf-spawn.git . 2>/dev/null \
     || git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
+# Generate the Gradle wrapper if it wasn't committed to the repo.
+if [ ! -f ./gradlew ]; then
+    gradle wrapper --gradle-version 8.5
+fi
 ./gradlew jar 2>&1
 # pf4j plugin discovery requires directory name == {id}-{version}.
 # If building from main the JAR may have a different version suffix; normalise it.
