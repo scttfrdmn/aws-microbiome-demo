@@ -43,7 +43,6 @@ docker {{
 
 process {{
     executor = 'spawn'
-    container = 'nfcore/taxprofiler:latest'
 
     // Per-label instance types — sized for the actual workload.
     withLabel: 'process_single' {{ ext.instanceType = '{inst_single}' }}
