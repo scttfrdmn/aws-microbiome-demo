@@ -345,7 +345,7 @@ def bake_ami(cfg) -> str:
     # Wait for the AMI to become available
     print("  Waiting for AMI to be ready...")
     waiter = ec2.get_waiter("image_available")
-    waiter.wait(ImageIds=[ami_id], WaiterConfig={"Delay": 15, "MaxAttempts": 40})
+    waiter.wait(ImageIds=[ami_id], WaiterConfig={"Delay": 30, "MaxAttempts": 80})  # up to 40 min
     print(f"  AMI ready: {ami_id}")
 
     # Terminate the bake instance
