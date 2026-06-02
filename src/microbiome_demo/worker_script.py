@@ -64,6 +64,18 @@ PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 # ── Ensure PATH includes tool install locations ──────────────────────────────
 export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# ── Fix nf-spawn plugin if it was stored as a bare JAR ───────────────────────
+# Nextflow requires plugins to be exploded (unzipped), not a bare JAR.
+# This corrects AMIs baked before the unzip fix was added to build_ami.py.
+NF_SPAWN_PLUGIN_DIR="/opt/nextflow_cache/plugins/nf-spawn-0.1.1"
+if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.1.1.jar" ] && \
+   [ ! -f "${NF_SPAWN_PLUGIN_DIR}/META-INF/MANIFEST.MF" ]; then
+    echo "Exploding nf-spawn plugin JAR..."
+    cd "${NF_SPAWN_PLUGIN_DIR}"
+    unzip -q nf-spawn-0.1.1.jar && rm nf-spawn-0.1.1.jar
+    cd -
+    echo "nf-spawn plugin exploded."
+fi
 
 # ── Prerequisites check ──────────────────────────────────────────────────────
 command -v nextflow || { echo "ERROR: nextflow not found at /usr/local/bin/nextflow"; exit 1; }
@@ -139,19 +151,26 @@ s3.put_object(
 )
 PYEOF
 
-# ── Run the pipeline ─────────────────────────────────────────────────────────
-# NXF_HOME points to the pre-pulled pipeline cache on the AMI.
-# The nf-spawn plugin JAR is in ~/.nextflow/plugins/ (also on the AMI).
-NXF_HOME=/opt/nextflow_cache \
+# ── Install tmux (not in AL2023 base; needed for resilient session) ──────────
+dnf install -y tmux 2>&1 | grep -E "^(Installing|Complete|Error)" || true
+
+# ── Run the pipeline in a tmux session ───────────────────────────────────────
+# tmux means Nextflow survives any SSH disconnect and can be reattached:
+#   ssh ec2-user@<ip> -t "tmux attach -t nf"
+# NXF_HOME points to the pre-pulled pipeline cache and exploded plugins on the AMI.
+tmux new-session -d -s nf -x 220 -y 50 2>/dev/null || true
+tmux send-keys -t nf "NXF_HOME=/opt/nextflow_cache \
     /usr/local/bin/nextflow run nf-core/taxprofiler \
     --input /tmp/nf-head/samplesheet.csv \
-    --outdir "${RESULTS_PREFIX}" \
+    --outdir ${RESULTS_PREFIX} \
     -c /tmp/nf-head/nextflow.config \
-    -w "s3://${BUCKET}/work/${JOB_NAME}/" \
-    -resume \
-    2>&1 | tee /tmp/nf-head/nextflow.stdout &
+    -w s3://${BUCKET}/work/${JOB_NAME}/ \
+    2>&1 | tee /tmp/nf-head/nextflow.stdout" Enter
 
-NF_PID=$!
+# Give Nextflow a moment to start, then grab its PID.
+sleep 5
+NF_PID=\$(pgrep -f "nextflow run" | head -1)
+echo "Nextflow PID: \${NF_PID}"
 
 # ── Progress monitor (runs alongside Nextflow) ───────────────────────────────
 # Polls the Nextflow trace file on S3 and the local .nextflow.log every 15s.
