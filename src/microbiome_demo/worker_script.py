@@ -64,17 +64,29 @@ PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 # ── Ensure PATH includes tool install locations ──────────────────────────────
 export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
 
-# ── Fix nf-spawn plugin if it was stored as a bare JAR ───────────────────────
-# Nextflow requires plugins to be exploded (unzipped), not a bare JAR.
-# This corrects AMIs baked before the unzip fix was added to build_ami.py.
+# ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
+# Nextflow pf4j requires class files in a classes/ subdirectory.
+# This fixes AMIs baked before the correct structure was implemented.
 NF_SPAWN_PLUGIN_DIR="/opt/nextflow_cache/plugins/nf-spawn-0.1.1"
-if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.1.1.jar" ] && \
-   [ ! -f "${NF_SPAWN_PLUGIN_DIR}/META-INF/MANIFEST.MF" ]; then
-    echo "Exploding nf-spawn plugin JAR..."
-    cd "${NF_SPAWN_PLUGIN_DIR}"
-    unzip -q nf-spawn-0.1.1.jar && rm nf-spawn-0.1.1.jar
+if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.1.1.jar" ]; then
+    # Bare JAR: explode it into classes/
+    echo "Fixing nf-spawn plugin: exploding JAR into classes/..."
+    mkdir -p "${NF_SPAWN_PLUGIN_DIR}/classes"
+    cd "${NF_SPAWN_PLUGIN_DIR}/classes"
+    unzip -q "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.1.1.jar"
+    rm "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.1.1.jar"
+    sed -i 's/^version=.*/version=0.1.1/' META-INF/nextflow.plugins 2>/dev/null || true
     cd -
-    echo "nf-spawn plugin exploded."
+    echo "nf-spawn plugin fixed."
+elif [ -d "${NF_SPAWN_PLUGIN_DIR}/io" ]; then
+    # Classes at root level (not in classes/): move them
+    echo "Fixing nf-spawn plugin: moving classes to classes/ subdirectory..."
+    mkdir -p "${NF_SPAWN_PLUGIN_DIR}/classes"
+    mv "${NF_SPAWN_PLUGIN_DIR}/io" "${NF_SPAWN_PLUGIN_DIR}/classes/io" 2>/dev/null || true
+    mv "${NF_SPAWN_PLUGIN_DIR}/META-INF" "${NF_SPAWN_PLUGIN_DIR}/classes/META-INF" 2>/dev/null || true
+    sed -i 's/^version=.*/version=0.1.1/' \
+        "${NF_SPAWN_PLUGIN_DIR}/classes/META-INF/nextflow.plugins" 2>/dev/null || true
+    echo "nf-spawn plugin fixed."
 fi
 
 # ── Prerequisites check ──────────────────────────────────────────────────────

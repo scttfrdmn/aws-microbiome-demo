@@ -168,15 +168,19 @@ if [ -z "${BUILT_JAR}" ]; then
     exit 1
 fi
 PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
-mkdir -p "${PLUGIN_DEST}"
-# Nextflow requires the plugin to be exploded (unzipped), not a bare JAR.
-# The plugin directory must contain META-INF/MANIFEST.MF and class files,
-# matching the structure of plugins installed by `nextflow plugin install`.
-cd "${PLUGIN_DEST}"
+mkdir -p "${PLUGIN_DEST}/classes"
+# Nextflow pf4j requires the plugin content in a classes/ subdirectory.
+# The JAR must be exploded; class files live under classes/io/...,
+# and manifests under classes/META-INF/. This matches the structure of
+# plugins installed by `nextflow plugin install`.
+cd "${PLUGIN_DEST}/classes"
 unzip -q "${OLDPWD}/${BUILT_JAR}"
 cd -
-echo "nf-spawn installed (exploded): ${PLUGIN_DEST}"
-ls "${PLUGIN_DEST}/"
+# Fix the version field in nextflow.plugins to match the plugin dir name.
+sed -i "s/^version=.*/version=${NF_SPAWN_VERSION}/" \
+    "${PLUGIN_DEST}/classes/META-INF/nextflow.plugins"
+echo "nf-spawn installed (exploded into classes/): ${PLUGIN_DEST}"
+find "${PLUGIN_DEST}" -type f
 
 # --- nf-amazon plugin (required for s3:// workDir) -------------------------
 # Nextflow downloads plugins on first use; pre-cache it now so demo runs
