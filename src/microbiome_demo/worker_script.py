@@ -39,11 +39,104 @@ from __future__ import annotations
 
 import tempfile
 
-_TOK_BUCKET = "@@BUCKET@@"
-_TOK_REGION = "@@REGION@@"
-_TOK_JOB_NAME = "@@JOB_NAME@@"
-_TOK_NF_CFG = "@@NF_CONFIG_KEY@@"  # S3 key for the rendered nextflow.config
-_TOK_SRR_KEY = "@@SRR_LIST_KEY@@"  # S3 key for the SRR accession list JSON
+_TOK_BUCKET    = "@@BUCKET@@"
+_TOK_REGION    = "@@REGION@@"
+_TOK_JOB_NAME  = "@@JOB_NAME@@"
+_TOK_NF_CFG    = "@@NF_CONFIG_KEY@@"   # S3 key for the rendered nextflow.config
+_TOK_SRR_KEY   = "@@SRR_LIST_KEY@@"    # S3 key for the SRR accession list JSON
+_TOK_MAIN_NF   = "@@MAIN_NF_KEY@@"     # S3 key for the custom main.nf pipeline
+
+# ---------------------------------------------------------------------------
+# Custom Nextflow pipeline (main.nf)
+# ---------------------------------------------------------------------------
+# FETCH_FASTQ reads each SRA file directly from RODA (s3://sra-pub-run-odp/)
+# and converts to FASTQ using fasterq-dump inside the SRA toolkit container.
+# Each sample runs on its own nf-spawn EC2 instance in parallel.
+# Outputs feed directly into nf-core/taxprofiler as a subworkflow.
+_MAIN_NF = """\
+nextflow.enable.dsl = 2
+
+// nf-core/taxprofiler included as a subworkflow.
+// The TAXPROFILER workflow accepts a samplesheet channel + databases file.
+include { TAXPROFILER } from 'nf-core/taxprofiler'
+
+process FETCH_FASTQ {
+    label 'process_single'
+    // SRA toolkit container — includes fasterq-dump with S3 support
+    container 'community.wave.seqera.io/library/sra-tools_pigz:12a31f9df8d48e54'
+
+    input:
+    tuple val(sample_id), val(srr), val(body_site)
+
+    output:
+    tuple val(sample_id), val(body_site),
+          path("${sample_id}_1.fastq.gz"),
+          path("${sample_id}_2.fastq.gz", optional: true)
+
+    script:
+    \"\"\"
+    set -euxo pipefail
+
+    # Configure SRA tools to pull from RODA directly (public bucket, no credentials).
+    # aws s3 cp + fasterq-dump is the fallback if fasterq-dump doesn't have S3 support.
+    if fasterq-dump --help 2>&1 | grep -q 's3'; then
+        # Direct S3 read (recent SRA toolkit builds)
+        fasterq-dump \\
+            --threads 2 --split-files --gzip --outdir . \\
+            s3://sra-pub-run-odp/sra/${srr}/${srr}.sra
+    else
+        # Fallback: download SRA then convert
+        aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr}.sra ./${srr}.sra \\
+            --no-sign-request --region us-east-1 --no-progress
+        fasterq-dump --threads 2 --split-files --gzip --outdir . ./${srr}.sra
+        rm -f ./${srr}.sra
+    fi
+
+    # Rename to stable sample_id prefix
+    if [ -f ${srr}_1.fastq.gz ]; then
+        mv ${srr}_1.fastq.gz ${sample_id}_1.fastq.gz
+        mv ${srr}_2.fastq.gz ${sample_id}_2.fastq.gz 2>/dev/null || true
+    else
+        # Single-end: rename the one FASTQ
+        mv ${srr}.fastq.gz ${sample_id}_1.fastq.gz
+    fi
+    \"\"\"
+}
+
+workflow {
+    // ── Parse SRR accession samplesheet ─────────────────────────────────────
+    // Input CSV: sample, run_accession, instrument_platform, body_site (+ empty fastq cols)
+    Channel
+        .fromPath(params.input)
+        .splitCsv(header: true)
+        .map { row -> [ row.sample, row.run_accession, row.body_site ?: 'unknown' ] }
+        .set { samples_ch }
+
+    // ── Fetch FASTQs from RODA in parallel (one nf-spawn instance per sample) ──
+    FETCH_FASTQ(samples_ch)
+
+    // ── Build taxprofiler samplesheet from FASTQ outputs ────────────────────
+    FETCH_FASTQ.out
+        .map { sample_id, body_site, fq1, fq2 ->
+            def run_acc = sample_id.replaceAll('_[^_]+$', '')
+            def fq2_val = fq2 ? fq2.toRealPath().toString() : ''
+            "${sample_id},${run_acc},ILLUMINA,${fq1.toRealPath()},${fq2_val},"
+        }
+        .collectFile(
+            name:    'samplesheet_for_taxprofiler.csv',
+            seed:    'sample,run_accession,instrument_platform,fastq_1,fastq_2,fasta\\n',
+            newLine: true,
+            sort:    true
+        )
+        .set { tp_input_ch }
+
+    // ── Run nf-core/taxprofiler ──────────────────────────────────────────────
+    TAXPROFILER(
+        tp_input_ch,
+        file(params.databases)
+    )
+}
+"""
 
 _HEAD_SCRIPT = r"""#!/bin/bash
 set -euxo pipefail
@@ -58,6 +151,7 @@ REGION="@@REGION@@"
 JOB_NAME="@@JOB_NAME@@"
 NF_CONFIG_KEY="@@NF_CONFIG_KEY@@"
 SRR_LIST_KEY="@@SRR_LIST_KEY@@"
+MAIN_NF_KEY="@@MAIN_NF_KEY@@"
 RESULTS_PREFIX="s3://${BUCKET}/results/${JOB_NAME}"
 PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 
@@ -101,6 +195,8 @@ aws s3 cp "s3://${BUCKET}/${NF_CONFIG_KEY}" /tmp/nf-head/nextflow.config \
     --region "${REGION}"
 aws s3 cp "s3://${BUCKET}/${SRR_LIST_KEY}" /tmp/nf-head/srr_list.json \
     --region "${REGION}"
+aws s3 cp "s3://${BUCKET}/${MAIN_NF_KEY}" /tmp/nf-head/main.nf \
+    --region "${REGION}"
 
 # ── Build taxprofiler samplesheet ────────────────────────────────────────────
 # Each sample reads its SRA file DIRECTLY from RODA at task runtime.
@@ -120,8 +216,11 @@ for item in samples:
         "sample":               f"{srr}_{site}",
         "run_accession":        srr,
         "instrument_platform":  "ILLUMINA",
-        # SRA accession — nf-core/taxprofiler fetches via fasterq-dump
-        # directly from RODA (s3://sra-pub-run-odp/).
+        # body_site is a custom column used by the FETCH_FASTQ process
+        # in main.nf to annotate outputs for downstream result aggregation.
+        "body_site": site,
+        # fastq_1/fastq_2 are empty here — FETCH_FASTQ fills them by
+        # reading directly from RODA (s3://sra-pub-run-odp/) with fasterq-dump.
         "fastq_1": "",
         "fastq_2": "",
         "fasta":   "",
@@ -130,7 +229,7 @@ for item in samples:
 out = "/tmp/nf-head/samplesheet.csv"
 with open(out, "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=["sample", "run_accession",
-                                       "instrument_platform",
+                                       "instrument_platform", "body_site",
                                        "fastq_1", "fastq_2", "fasta"])
     w.writeheader()
     w.writerows(rows)
@@ -182,7 +281,7 @@ dnf install -y tmux 2>&1 | grep -E "^(Installing|Complete|Error)" || true
 # NXF_HOME points to the pre-pulled pipeline cache and exploded plugins on the AMI.
 tmux new-session -d -s nf -x 220 -y 50 2>/dev/null || true
 tmux send-keys -t nf "NXF_HOME=/opt/nextflow_cache \
-    /usr/local/bin/nextflow run nf-core/taxprofiler \
+    /usr/local/bin/nextflow run /tmp/nf-head/main.nf \
     --input /tmp/nf-head/samplesheet.csv \
     --databases /tmp/nf-head/databases.csv \
     --outdir ${RESULTS_PREFIX} \
@@ -239,7 +338,10 @@ def parse_rchar(s):
 
 
 def is_sra_task(name):
-    return any(k in name.lower() for k in ("fasterq", "sratools", "fetchngs", "sra_to"))
+    # FETCH_FASTQ is the custom process name in main.nf; others are fallbacks
+    return any(k in name.lower() for k in (
+        "fetch_fastq", "fasterq", "sratools", "fetchngs", "sra_to"
+    ))
 
 
 def parse_kraken2_report(body):
@@ -420,19 +522,38 @@ echo "=== Head node complete: $(date) (Nextflow exit: ${NF_EXIT}) ==="
 """
 
 
-def render(cfg, nf_config_key: str, srr_list_key: str) -> str:
+def render(cfg, nf_config_key: str, srr_list_key: str, main_nf_key: str = "") -> str:
     """Return the head node bash script with config values substituted."""
 
     def _sub(s: str) -> str:
         return (
-            s.replace(_TOK_BUCKET, cfg.BUCKET)
-            .replace(_TOK_REGION, cfg.REGION)
-            .replace(_TOK_JOB_NAME, cfg.JOB_NAME)
-            .replace(_TOK_NF_CFG, nf_config_key)
-            .replace(_TOK_SRR_KEY, srr_list_key)
+            s.replace(_TOK_BUCKET,   cfg.BUCKET)
+            .replace(_TOK_REGION,    cfg.REGION)
+            .replace(_TOK_JOB_NAME,  cfg.JOB_NAME)
+            .replace(_TOK_NF_CFG,    nf_config_key)
+            .replace(_TOK_SRR_KEY,   srr_list_key)
+            .replace(_TOK_MAIN_NF,   main_nf_key or f"pipeline/{cfg.JOB_NAME}/main.nf")
         )
 
     return _sub(_HEAD_SCRIPT)
+
+
+def upload_main_nf(cfg) -> str:
+    """Upload the custom main.nf pipeline to S3 and return its key.
+
+    The pipeline (FETCH_FASTQ → TAXPROFILER) is rendered from _MAIN_NF
+    and stored in S3 alongside the nextflow.config and SRR list.
+    """
+    import boto3
+
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    key = f"pipeline/{cfg.JOB_NAME}/main.nf"
+    s3.put_object(
+        Bucket=cfg.BUCKET,
+        Key=key,
+        Body=_MAIN_NF.encode(),
+    )
+    return key
 
 
 def write_temp(script: str) -> str:

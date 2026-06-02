@@ -121,9 +121,10 @@ def main() -> None:
     emit({"type": "phase", "label": "Uploading SRR list and Nextflow config…"})
     sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
     accessions = HMP_ACCESSIONS[:sample_count]
-    srr_key = worker_script.write_srr_slice(cfg, accessions)
-    nf_cfg_str = nextflow_config.render(cfg, queue_size)
-    nf_cfg_key = worker_script.upload_nextflow_config(cfg, nf_cfg_str)
+    srr_key     = worker_script.write_srr_slice(cfg, accessions)
+    nf_cfg_str  = nextflow_config.render(cfg, queue_size)
+    nf_cfg_key  = worker_script.upload_nextflow_config(cfg, nf_cfg_str)
+    main_nf_key = worker_script.upload_main_nf(cfg)
     emit({"type": "phase", "label": f"Config ready — queueSize={queue_size}, {sample_count} samples"})  # noqa: E501
 
     # 4. Launch head
@@ -135,7 +136,7 @@ def main() -> None:
     head_cfg.INSTANCE_TYPE = getattr(cfg, "HEAD_INSTANCE_TYPE", "t4g.small")
     head_cfg.INSTANCE_COUNT = 1
 
-    head_script = worker_script.render(cfg, nf_cfg_key, srr_key)
+    head_script = worker_script.render(cfg, nf_cfg_key, srr_key, main_nf_key)
     head_script_path = worker_script.write_temp(head_script)
     wg = spawn.launch_workers(head_cfg, head_script_path, emit=emit)
     head_id = wg.instance_ids[0] if wg.instance_ids else None

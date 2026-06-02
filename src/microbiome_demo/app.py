@@ -299,9 +299,10 @@ def _run_pipeline() -> None:
         sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
         accessions = HMP_ACCESSIONS[:sample_count]
 
-        srr_key = worker_script.write_srr_slice(cfg, accessions)
+        srr_key    = worker_script.write_srr_slice(cfg, accessions)
         nf_cfg_str = nextflow_config.render(cfg, queue_size)
         nf_cfg_key = worker_script.upload_nextflow_config(cfg, nf_cfg_str)
+        main_nf_key = worker_script.upload_main_nf(cfg)
 
         emit(
             {
@@ -313,7 +314,7 @@ def _run_pipeline() -> None:
         # ── 4. Launch Nextflow head instance ──────────────────────────────
         emit({"type": "phase", "label": "Launching Nextflow head instance (t4g.small)…"})
 
-        head_script = worker_script.render(cfg, nf_cfg_key, srr_key)
+        head_script = worker_script.render(cfg, nf_cfg_key, srr_key, main_nf_key)
         head_script_path = worker_script.write_temp(head_script)
 
         head_cfg = _head_cfg(cfg)
