@@ -138,6 +138,16 @@ with open(out, "w", newline="") as f:
 print(f"Samplesheet: {len(rows)} samples → {out}")
 PYEOF
 
+# ── Build databases CSV ──────────────────────────────────────────────────────
+# nf-core/taxprofiler v2+ requires a databases CSV instead of --kraken2_db flags.
+# Only include Kraken2 — MetaPhlAn runs inside the container and fetches its
+# own database via the pipeline if needed (or skip it to save time).
+cat > /tmp/nf-head/databases.csv << 'DBEOF'
+tool,db_name,db_params,db_path
+kraken2,k2_pluspf_16gb,,/opt/databases/kraken2
+DBEOF
+echo "Databases CSV: $(cat /tmp/nf-head/databases.csv | wc -l) entries"
+
 # ── Write initial progress ───────────────────────────────────────────────────
 python3 - << 'PYEOF'
 import json, boto3, time
@@ -174,6 +184,7 @@ tmux new-session -d -s nf -x 220 -y 50 2>/dev/null || true
 tmux send-keys -t nf "NXF_HOME=/opt/nextflow_cache \
     /usr/local/bin/nextflow run nf-core/taxprofiler \
     --input /tmp/nf-head/samplesheet.csv \
+    --databases /tmp/nf-head/databases.csv \
     --outdir ${RESULTS_PREFIX} \
     -c /tmp/nf-head/nextflow.config \
     -w s3://${BUCKET}/work/${JOB_NAME}/ \
