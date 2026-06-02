@@ -136,7 +136,7 @@ spawn version
 # Clones the pinned v0.1.0 tag, builds the JAR, and installs it into the
 # shared NXF_HOME/plugins/ directory so all Nextflow runs on this AMI find it.
 # nextflow.config references it as: plugins { id 'nf-spawn@0.1.0' }
-NF_SPAWN_VERSION="0.1.0"
+NF_SPAWN_VERSION="0.1.1"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
 mkdir -p /opt/nf-spawn "${NF_PLUGIN_DIR}"
 cd /opt/nf-spawn
@@ -152,57 +152,7 @@ dnf install -y unzip
 unzip -q "gradle-${GRADLE_VER}-bin.zip" -d /opt
 ln -sf "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
 cd /opt/nf-spawn
-# Overwrite build.gradle with a Gradle 8.x compatible version.
-# The original uses compileOnly in a way that broke in Gradle 7+ (nf-spawn#1).
-# Fix: add canBeResolved=true so the configuration can be resolved as a classpath.
-cat > build.gradle << 'BUILDEOF'
-plugins {
-    id 'groovy'
-}
-
-group = 'io.nextflow'
-version = '0.1.0'
-
-repositories {
-    mavenCentral()
-    maven { url 'https://s01.oss.sonatype.org/content/repositories/snapshots/' }
-}
-
-configurations {
-    compileOnly { canBeResolved = true }
-    testImplementation { extendsFrom(configurations.compileOnly) }
-}
-
-dependencies {
-    compileOnly 'io.nextflow:nextflow:23.10.0'
-    compileOnly 'org.pf4j:pf4j:3.9.0'
-    compileOnly 'org.slf4j:slf4j-api:2.0.6'
-    testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
-    testImplementation 'junit:junit:4.13.2'
-}
-
-sourceSets {
-    main {
-        groovy { srcDirs = ['src/main/groovy'] }
-        resources { srcDirs = ['src/main/resources'] }
-    }
-}
-
-compileGroovy {
-    classpath = configurations.compileOnly + configurations.runtimeClasspath
-}
-
-jar {
-    manifest {
-        attributes 'Plugin-Id': 'nf-spawn',
-                   'Plugin-Version': version,
-                   'Plugin-Class': 'io.nextflow.spawn.SpawnPlugin',
-                   'Plugin-Provider': 'spore-host'
-    }
-    from sourceSets.main.output
-}
-BUILDEOF
-
+# v0.1.1 fixes the Gradle 7+/8.x build compatibility (nf-spawn#1).
 gradle wrapper --gradle-version ${GRADLE_VER}
 ./gradlew jar 2>&1
 # pf4j plugin discovery requires directory name == {id}-{version}.
