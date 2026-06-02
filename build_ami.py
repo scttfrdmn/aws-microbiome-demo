@@ -97,6 +97,11 @@ wget -q --timeout=120 https://get.nextflow.io -O nextflow
 chmod +x nextflow
 ./nextflow self-update  # pull latest stable version
 
+# --- Python packages --------------------------------------------------------
+# boto3 is needed by the head node script for S3 progress reporting.
+dnf install -y python3-pip
+python3 -m pip install --quiet boto3
+
 # Note: nf-core/taxprofiler Docker image is NOT pre-pulled here.
 # Nextflow pulls it automatically on first use from Docker Hub.
 # Pre-pulling would require `docker login` which we avoid on bake instances.
