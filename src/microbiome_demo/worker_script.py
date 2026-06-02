@@ -167,10 +167,10 @@ tmux send-keys -t nf "NXF_HOME=/opt/nextflow_cache \
     -w s3://${BUCKET}/work/${JOB_NAME}/ \
     2>&1 | tee /tmp/nf-head/nextflow.stdout" Enter
 
-# Give Nextflow a moment to start, then grab its PID.
+# Give Nextflow a moment to start, then grab its PID for the monitor.
 sleep 5
-NF_PID=\$(pgrep -f "nextflow run" | head -1)
-echo "Nextflow PID: \${NF_PID}"
+NF_PID=$(pgrep -f "nextflow run" | head -1 || echo "0")
+echo "Nextflow PID: ${NF_PID}"
 
 # ── Progress monitor (runs alongside Nextflow) ───────────────────────────────
 # Polls the Nextflow trace file on S3 and the local .nextflow.log every 15s.
