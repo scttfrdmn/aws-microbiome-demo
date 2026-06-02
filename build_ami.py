@@ -144,18 +144,32 @@ cd /opt/nf-spawn
 git clone --depth 1 --branch "v${NF_SPAWN_VERSION}" \
     https://github.com/spore-host/nf-spawn.git . 2>/dev/null \
     || git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
-# gradle is not in AL2023 repos; install from the official distribution zip.
-# This provides the `gradle` CLI needed to generate the wrapper and build.
-if [ ! -f ./gradlew ]; then
-    GRADLE_VER="8.5"
-    cd /tmp
-    wget -q --timeout=120 "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip"
-    dnf install -y unzip
-    unzip -q "gradle-${GRADLE_VER}-bin.zip" -d /opt
-    ln -sf "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
-    cd /opt/nf-spawn
-    gradle wrapper --gradle-version ${GRADLE_VER}
-fi
+# Install Gradle from the official distribution zip (not in AL2023 repos).
+GRADLE_VER="8.8"
+cd /tmp
+wget -q --timeout=120 "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip"
+dnf install -y unzip
+unzip -q "gradle-${GRADLE_VER}-bin.zip" -d /opt
+ln -sf "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
+cd /opt/nf-spawn
+# Patch build.gradle for Gradle 7+ compatibility:
+# The old compileOnly configuration is not resolvable in Gradle 7+.
+# Replace it with an explicit compileClasspath configuration.
+sed -i 's|configurations.compileOnly + configurations.runtimeClasspath|configurations.compileOnly.getResolvedConfiguration().getFiles() + configurations.runtimeClasspath|' build.gradle || true
+# Alternatively add canBeResolved=true to the compileOnly config
+python3 - << 'PYEOF'
+txt = open("build.gradle").read()
+txt = txt.replace(
+    "configurations {\n    compileOnly",
+    "configurations {\n    compileOnly { canBeResolved = true }"
+).replace(
+    "configurations {\n    compileOnly { canBeResolved = true }\n    testImplementation.extendsFrom compileOnly",
+    "configurations {\n    compileOnly { canBeResolved = true }\n    testImplementation { extendsFrom compileOnly }"
+)
+open("build.gradle", "w").write(txt)
+print("build.gradle patched for Gradle 7+ compatibility")
+PYEOF
+gradle wrapper --gradle-version ${GRADLE_VER}
 ./gradlew jar 2>&1
 # pf4j plugin discovery requires directory name == {id}-{version}.
 # If building from main the JAR may have a different version suffix; normalise it.
