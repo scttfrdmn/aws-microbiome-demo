@@ -140,7 +140,7 @@ spawn version
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
 # Clones the pinned v0.1.0 tag, builds the JAR, and installs it into the
 # shared NXF_HOME/plugins/ directory so all Nextflow runs on this AMI find it.
-# nextflow.config references it as: plugins { id 'nf-spawn@0.1.3' }
+# nextflow.config references it as: plugins { id 'nf-spawn@0.2.0' }
 NF_SPAWN_VERSION="0.2.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
 mkdir -p /opt/nf-spawn "${NF_PLUGIN_DIR}"
