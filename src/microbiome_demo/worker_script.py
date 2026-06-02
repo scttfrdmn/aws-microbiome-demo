@@ -64,6 +64,9 @@ PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 # ── Ensure PATH includes tool install locations ──────────────────────────────
 export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# ── Install Python dependencies (boto3 required for S3 progress reporting) ───
+python3 -m pip install --quiet boto3 2>&1 || true
+
 # ── Prerequisites check ──────────────────────────────────────────────────────
 command -v nextflow || { echo "ERROR: nextflow not found at /usr/local/bin/nextflow"; exit 1; }
 command -v spawn    || { echo "ERROR: spawn not found on PATH"; exit 1; }
