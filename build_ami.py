@@ -152,23 +152,57 @@ dnf install -y unzip
 unzip -q "gradle-${GRADLE_VER}-bin.zip" -d /opt
 ln -sf "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
 cd /opt/nf-spawn
-# Patch build.gradle for Gradle 7+ compatibility:
-# The old compileOnly configuration is not resolvable in Gradle 7+.
-# Replace it with an explicit compileClasspath configuration.
-sed -i 's|configurations.compileOnly + configurations.runtimeClasspath|configurations.compileOnly.getResolvedConfiguration().getFiles() + configurations.runtimeClasspath|' build.gradle || true
-# Alternatively add canBeResolved=true to the compileOnly config
-python3 - << 'PYEOF'
-txt = open("build.gradle").read()
-txt = txt.replace(
-    "configurations {\n    compileOnly",
-    "configurations {\n    compileOnly { canBeResolved = true }"
-).replace(
-    "configurations {\n    compileOnly { canBeResolved = true }\n    testImplementation.extendsFrom compileOnly",
-    "configurations {\n    compileOnly { canBeResolved = true }\n    testImplementation { extendsFrom compileOnly }"
-)
-open("build.gradle", "w").write(txt)
-print("build.gradle patched for Gradle 7+ compatibility")
-PYEOF
+# Overwrite build.gradle with a Gradle 8.x compatible version.
+# The original uses compileOnly in a way that broke in Gradle 7+ (nf-spawn#1).
+# Fix: add canBeResolved=true so the configuration can be resolved as a classpath.
+cat > build.gradle << 'BUILDEOF'
+plugins {
+    id 'groovy'
+}
+
+group = 'io.nextflow'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+    maven { url 'https://s01.oss.sonatype.org/content/repositories/snapshots/' }
+}
+
+configurations {
+    compileOnly { canBeResolved = true }
+    testImplementation { extendsFrom(configurations.compileOnly) }
+}
+
+dependencies {
+    compileOnly 'io.nextflow:nextflow:23.10.0'
+    compileOnly 'org.pf4j:pf4j:3.9.0'
+    compileOnly 'org.slf4j:slf4j-api:2.0.6'
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+sourceSets {
+    main {
+        groovy { srcDirs = ['src/main/groovy'] }
+        resources { srcDirs = ['src/main/resources'] }
+    }
+}
+
+compileGroovy {
+    classpath = configurations.compileOnly + configurations.runtimeClasspath
+}
+
+jar {
+    manifest {
+        attributes 'Plugin-Id': 'nf-spawn',
+                   'Plugin-Version': version,
+                   'Plugin-Class': 'io.nextflow.spawn.SpawnPlugin',
+                   'Plugin-Provider': 'spore-host'
+    }
+    from sourceSets.main.output
+}
+BUILDEOF
+
 gradle wrapper --gradle-version ${GRADLE_VER}
 ./gradlew jar 2>&1
 # pf4j plugin discovery requires directory name == {id}-{version}.
