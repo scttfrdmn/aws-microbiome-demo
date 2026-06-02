@@ -64,12 +64,6 @@ PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 # ── Ensure PATH includes tool install locations ──────────────────────────────
 export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
 
-# ── Install Python dependencies (boto3 required for S3 progress reporting) ───
-# AL2023 doesn't include pip by default; install it first.
-if ! python3 -m pip --version &>/dev/null 2>&1; then
-    dnf install -y python3-pip 2>&1 || true
-fi
-python3 -m pip install --quiet boto3 2>&1 || true
 
 # ── Prerequisites check ──────────────────────────────────────────────────────
 command -v nextflow || { echo "ERROR: nextflow not found at /usr/local/bin/nextflow"; exit 1; }
