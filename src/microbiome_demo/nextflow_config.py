@@ -63,18 +63,13 @@ executor {{
 }}
 
 params {{
-    // Classifier databases (pre-staged on the AMI).
-    kraken2_db   = '/opt/databases/kraken2'
-    metaphlan_db = '/opt/databases/metaphlan'
-
-    // Pipeline flags.
-    run_kraken2                      = true
-    run_metaphlan                    = true
-    run_bracken                      = false
-    run_humann                       = false
+    // taxprofiler flags — applied to both the FETCH_FASTQ→TAXPROFILER workflow.
+    // The databases CSV (--databases) is passed on the command line.
+    // Kraken2 database path is pre-staged on the AMI at /opt/databases/kraken2.
     perform_shortread_hostremoval    = false
     shortread_qc_tool                = 'fastp'
     save_preprocessed_reads          = false
+    save_analysis_results            = true
 }}
 
 // S3 work directory — intermediate files pass between instances via S3.
