@@ -251,7 +251,8 @@ def bake_ami(cfg) -> str:
         f.write(_BAKE_SCRIPT)
         bake_script_path = f.name
 
-    # Launch via spawn: ARM64 AL2023, 80 GB EBS (requires spawn >= 0.36.3).
+    # Launch via spawn: ARM64 AL2023, 40 GB EBS (requires spawn >= 0.36.3).
+    # 40 GB is sufficient: 20 GB baked content + 8 GB Docker cache + temp space.
     # Notes:
     #   - --ami omitted: spawn auto-detects latest AL2023 for the region/arch
     #   - -o json omitted: spawn's TUI overrides it and outputs ANSI progress,
@@ -266,7 +267,7 @@ def bake_ami(cfg) -> str:
             "--region",
             cfg.REGION,
             "--volume-size",
-            "80",
+            "40",
             "--user-data-file",
             bake_script_path,
             "--ttl",
