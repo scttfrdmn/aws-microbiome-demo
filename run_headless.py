@@ -14,6 +14,7 @@ Optional env vars:
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -84,10 +85,14 @@ def main() -> None:
     print(f"  Sample count: {cfg.SAMPLE_COUNT}")
     print()
 
-    # 0. Validate config
+    # 0. Validate config + clear stale S3 results
     ami = getattr(cfg, "AMI_ID", "")
     if not ami:
         sys.exit("ERROR: AMI_ID is not set in config.py — run `make ami` first.")
+
+    emit({"type": "phase", "label": "Clearing stale S3 results…"})
+    with contextlib.suppress(Exception):
+        pipeline.clear_results(cfg)
 
     # 1. Quota
     emit({"type": "phase", "label": "Querying vCPU quotas via truffle…"})

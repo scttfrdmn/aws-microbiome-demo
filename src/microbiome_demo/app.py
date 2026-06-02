@@ -248,7 +248,7 @@ def _run_pipeline() -> None:
                 _STATE["progress"] = event
 
     try:
-        # ── 0. Validate config ────────────────────────────────────────────
+        # ── 0. Validate config + clear stale results ──────────────────────
         err = _validate_config(cfg)
         if err:
             emit({"type": "error", "message": err})
@@ -256,6 +256,10 @@ def _run_pipeline() -> None:
                 _STATE["status"] = "error"
                 _STATE["error"] = err
             return
+
+        # Clear stale results from any previous run.
+        with contextlib.suppress(Exception):
+            pipeline.clear_results(cfg)
 
         # ── 1. Query vCPU quotas via truffle ─────────────────────────────
         emit({"type": "phase", "label": "Querying vCPU quotas via truffle…"})
