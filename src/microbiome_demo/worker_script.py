@@ -54,15 +54,15 @@ _TOK_MAIN_NF   = "@@MAIN_NF_KEY@@"     # S3 key for the custom main.nf pipeline
 # Each sample runs on its own nf-spawn EC2 instance in parallel.
 # Outputs feed directly into nf-core/taxprofiler as a subworkflow.
 _MAIN_NF = """\
+// fetch_fastq.nf — Stage 1: fetch SRA files from RODA and convert to FASTQ
+// Each sample runs on its own nf-spawn EC2 instance in parallel.
+// Output: samplesheet_for_taxprofiler.csv with real FASTQ S3 paths.
 nextflow.enable.dsl = 2
-
-// nf-core/taxprofiler included as a subworkflow.
-// The TAXPROFILER workflow accepts a samplesheet channel + databases file.
-include { TAXPROFILER } from 'nf-core/taxprofiler'
 
 process FETCH_FASTQ {
     label 'process_single'
-    // SRA toolkit container — includes fasterq-dump with S3 support
+    // SRA toolkit container — includes fasterq-dump with S3 support.
+    // Wave/Seqera registry: sra-tools + pigz for gzip compression.
     container 'community.wave.seqera.io/library/sra-tools_pigz:12a31f9df8d48e54'
 
     input:
@@ -77,64 +77,51 @@ process FETCH_FASTQ {
     \"\"\"
     set -euxo pipefail
 
-    # Configure SRA tools to pull from RODA directly (public bucket, no credentials).
-    # aws s3 cp + fasterq-dump is the fallback if fasterq-dump doesn't have S3 support.
-    if fasterq-dump --help 2>&1 | grep -q 's3'; then
-        # Direct S3 read (recent SRA toolkit builds)
-        fasterq-dump \\
-            --threads 2 --split-files --gzip --outdir . \\
-            s3://sra-pub-run-odp/sra/${srr}/${srr}.sra
-    else
-        # Fallback: download SRA then convert
-        aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr}.sra ./${srr}.sra \\
-            --no-sign-request --region us-east-1 --no-progress
-        fasterq-dump --threads 2 --split-files --gzip --outdir . ./${srr}.sra
-        rm -f ./${srr}.sra
-    fi
+    # Download SRA from RODA then convert to FASTQ.
+    # RODA is in us-east-1 — same region as these instances, no egress charge.
+    aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr}.sra ./${srr}.sra \\
+        --no-sign-request --region us-east-1 --no-progress
 
-    # Rename to stable sample_id prefix
+    fasterq-dump --threads 2 --split-files --gzip --outdir . ./${srr}.sra
+    rm -f ./${srr}.sra
+
+    # Rename to stable sample_id prefix (handle both paired and single-end)
     if [ -f ${srr}_1.fastq.gz ]; then
         mv ${srr}_1.fastq.gz ${sample_id}_1.fastq.gz
         mv ${srr}_2.fastq.gz ${sample_id}_2.fastq.gz 2>/dev/null || true
     else
-        # Single-end: rename the one FASTQ
         mv ${srr}.fastq.gz ${sample_id}_1.fastq.gz
+        echo "Warning: single-end read for ${srr}"
     fi
     \"\"\"
 }
 
 workflow {
-    // ── Parse SRR accession samplesheet ─────────────────────────────────────
-    // Input CSV: sample, run_accession, instrument_platform, body_site (+ empty fastq cols)
+    // Parse SRR accession samplesheet (columns: sample, run_accession, body_site, ...)
     Channel
         .fromPath(params.input)
         .splitCsv(header: true)
         .map { row -> [ row.sample, row.run_accession, row.body_site ?: 'unknown' ] }
         .set { samples_ch }
 
-    // ── Fetch FASTQs from RODA in parallel (one nf-spawn instance per sample) ──
+    // Fetch FASTQs in parallel — one nf-spawn EC2 instance per sample
     FETCH_FASTQ(samples_ch)
 
-    // ── Build taxprofiler samplesheet from FASTQ outputs ────────────────────
+    // Build samplesheet for nf-core/taxprofiler (stage 2)
     FETCH_FASTQ.out
         .map { sample_id, body_site, fq1, fq2 ->
-            def run_acc = sample_id.replaceAll('_[^_]+$', '')
-            def fq2_val = fq2 ? fq2.toRealPath().toString() : ''
-            "${sample_id},${run_acc},ILLUMINA,${fq1.toRealPath()},${fq2_val},"
+            def run_acc = sample_id.replaceAll('_[^_]+\$', '')
+            def fq2_val = fq2 ? fq2.toString() : ''
+            "${sample_id},${run_acc},ILLUMINA,${fq1},${fq2_val},"
         }
         .collectFile(
-            name:    'samplesheet_for_taxprofiler.csv',
+            name:    params.samplesheet_out ?: 'samplesheet_for_taxprofiler.csv',
             seed:    'sample,run_accession,instrument_platform,fastq_1,fastq_2,fasta\\n',
             newLine: true,
-            sort:    true
+            sort:    true,
+            storeDir: params.samplesheet_dir ?: '.'
         )
-        .set { tp_input_ch }
-
-    // ── Run nf-core/taxprofiler ──────────────────────────────────────────────
-    TAXPROFILER(
-        tp_input_ch,
-        file(params.databases)
-    )
+        .subscribe { f -> log.info "Taxprofiler samplesheet: ${f}" }
 }
 """
 
@@ -280,13 +267,24 @@ dnf install -y tmux 2>&1 | grep -E "^(Installing|Complete|Error)" || true
 #   ssh ec2-user@<ip> -t "tmux attach -t nf"
 # NXF_HOME points to the pre-pulled pipeline cache and exploded plugins on the AMI.
 tmux new-session -d -s nf -x 220 -y 50 2>/dev/null || true
-tmux send-keys -t nf "NXF_HOME=/opt/nextflow_cache \
+tmux send-keys -t nf "set -e
+# Stage 1: FETCH_FASTQ — download SRA from RODA and convert to FASTQ via nf-spawn
+echo '=== Stage 1: Fetching FASTQs from RODA ===' && \
+NXF_HOME=/opt/nextflow_cache \
     /usr/local/bin/nextflow run /tmp/nf-head/main.nf \
     --input /tmp/nf-head/samplesheet.csv \
+    --samplesheet_dir /tmp/nf-head \
+    --samplesheet_out samplesheet_for_taxprofiler.csv \
+    -c /tmp/nf-head/nextflow.config \
+    -w s3://${BUCKET}/work/${JOB_NAME}/fetch/ && \
+echo '=== Stage 2: Running nf-core/taxprofiler ===' && \
+NXF_HOME=/opt/nextflow_cache \
+    /usr/local/bin/nextflow run nf-core/taxprofiler \
+    --input /tmp/nf-head/samplesheet_for_taxprofiler.csv \
     --databases /tmp/nf-head/databases.csv \
     --outdir ${RESULTS_PREFIX} \
     -c /tmp/nf-head/nextflow.config \
-    -w s3://${BUCKET}/work/${JOB_NAME}/ \
+    -w s3://${BUCKET}/work/${JOB_NAME}/classify/ \
     2>&1 | tee /tmp/nf-head/nextflow.stdout" Enter
 
 # Give Nextflow a moment to start, then grab its PID for the monitor.

@@ -80,10 +80,11 @@ def test_render_uses_main_nf(mock_cfg):
 
 
 def test_main_nf_contains_fetch_fastq():
-    """The embedded main.nf must include the FETCH_FASTQ process."""
+    """The embedded main.nf (stage 1) must include the FETCH_FASTQ process."""
     from microbiome_demo.worker_script import _MAIN_NF
 
     assert "FETCH_FASTQ" in _MAIN_NF
     assert "sra-pub-run-odp" in _MAIN_NF
     assert "fasterq-dump" in _MAIN_NF
-    assert "TAXPROFILER" in _MAIN_NF
+    # taxprofiler is stage 2, run separately via `nextflow run nf-core/taxprofiler`
+    assert "samplesheet_for_taxprofiler.csv" in _MAIN_NF
