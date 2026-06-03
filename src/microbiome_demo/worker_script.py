@@ -153,6 +153,12 @@ export AWS_STS_REGIONAL_ENDPOINTS=regional
 # HOME is required by spawn CLI to locate its config directory.
 # Nextflow tasks run in a context where HOME may not be set.
 export HOME=/root
+# Ensure root has an SSH key — spawn needs it to connect to launched instances.
+# spawn#37: spawn should auto-generate this; workaround until that's fixed.
+if [ ! -f /root/.ssh/id_rsa ]; then
+    mkdir -p /root/.ssh
+    ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N '' 2>&1
+fi
 
 # ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
 # Nextflow pf4j requires class files in a classes/ subdirectory.
