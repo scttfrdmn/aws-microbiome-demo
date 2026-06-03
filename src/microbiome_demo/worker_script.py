@@ -110,7 +110,7 @@ workflow {
     // Build samplesheet for nf-core/taxprofiler (stage 2)
     FETCH_FASTQ.out
         .map { sample_id, body_site, fq1, fq2 ->
-            def run_acc = sample_id.replaceAll('_[^_]+\$', '')
+            def run_acc = sample_id.replaceAll('_[^_]+\\$', '')
             def fq2_val = fq2 ? fq2.toString() : ''
             "${sample_id},${run_acc},ILLUMINA,${fq1},${fq2_val},"
         }
