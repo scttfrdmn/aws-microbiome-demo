@@ -79,7 +79,8 @@ process FETCH_FASTQ {
 
     # Download SRA from RODA then convert to FASTQ.
     # RODA is in us-east-1 — same region as these instances, no egress charge.
-    aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr}.sra ./${srr}.sra \\
+    # RODA stores files without .sra extension: sra/SRRxxxxxx/SRRxxxxxx
+    aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr} ./${srr}.sra \\
         --no-sign-request --region us-east-1 --no-progress
 
     fasterq-dump --threads 2 --split-files --gzip --outdir . ./${srr}.sra
