@@ -51,24 +51,28 @@ process {{
         ext.region       = '{region}'
         ext.ttl          = '2h'
         ext.ami          = '{ami_id}'
+        ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_low' {{
         ext.instanceType = '{inst_low}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
         ext.ami          = '{ami_id}'
+        ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_medium' {{
         ext.instanceType = '{inst_medium}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
         ext.ami          = '{ami_id}'
+        ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_high' {{
         ext.instanceType = '{inst_high}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
         ext.ami          = '{ami_id}'
+        ext.volumeSize   = {volume_size}
     }}
 
     // Fallback for unlabelled processes.
@@ -76,6 +80,7 @@ process {{
     ext.region       = '{region}'
     ext.ttl          = '2h'
     ext.ami          = '{ami_id}'
+    ext.volumeSize   = {volume_size}
 
     // Environment variables inherited by all nf-spawn task submissions.
     // HOME is required by the spawn CLI to locate its config directory.
@@ -148,7 +153,7 @@ def render(cfg, queue_size: int) -> str:
     """Return a nextflow.config string with all values substituted.
 
     Args:
-        cfg:        config module (REGION, BUCKET, JOB_NAME, AMI_ID).
+        cfg:        config module (REGION, BUCKET, JOB_NAME, AMI_ID, VOLUME_SIZE).
         queue_size: derived from truffle.derive_queue_size().
     """
     return _TEMPLATE.format(
@@ -157,6 +162,7 @@ def render(cfg, queue_size: int) -> str:
         job_name=cfg.JOB_NAME,
         ami_id=cfg.AMI_ID,
         queue_size=queue_size,
+        volume_size=getattr(cfg, "VOLUME_SIZE", 40),
         inst_single=_LABEL_INSTANCE_TYPES["process_single"],
         inst_low=_LABEL_INSTANCE_TYPES["process_low"],
         inst_medium=_LABEL_INSTANCE_TYPES["process_medium"],
