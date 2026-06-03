@@ -116,20 +116,21 @@ process {{
 // Trace file written to S3 — the dashboard polls this for live progress.
 trace {{
     enabled   = true
-    file      = 's3://{bucket}/results/{job_name}/trace.tsv'
     overwrite = true
+    file      = 's3://{bucket}/results/{job_name}/trace.tsv'
     fields    = 'task_id,name,status,exit,start,complete,duration,realtime,cpus,memory,rss,vmem,rchar,wchar'
 }}
 
-// Capture RODA reads and FASTQ sizes in the timeline for data-volume reporting.
 timeline {{
-    enabled = true
-    file    = 's3://{bucket}/results/{job_name}/timeline.html'
+    enabled   = true
+    overwrite = true
+    file      = 's3://{bucket}/results/{job_name}/timeline.html'
 }}
 
 report {{
-    enabled = true
-    file    = 's3://{bucket}/results/{job_name}/report.html'
+    enabled   = true
+    overwrite = true
+    file      = 's3://{bucket}/results/{job_name}/report.html'
 }}
 """
 

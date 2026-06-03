@@ -148,6 +148,8 @@ export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
 # The EC2 instance profile provides credentials; the region must be set explicitly.
 export AWS_DEFAULT_REGION="@@REGION@@"
 export AWS_REGION="@@REGION@@"
+# Force regional STS endpoint to avoid VPC endpoint routing issues.
+export AWS_STS_REGIONAL_ENDPOINTS=regional
 
 # ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
 # Nextflow pf4j requires class files in a classes/ subdirectory.
