@@ -44,11 +44,32 @@ docker {{
 process {{
     executor = 'spawn'
 
-    // Per-label instance types — sized for the actual workload.
-    withLabel: 'process_single' {{ ext.instanceType = '{inst_single}' }}
-    withLabel: 'process_low'    {{ ext.instanceType = '{inst_low}'    }}
-    withLabel: 'process_medium' {{ ext.instanceType = '{inst_medium}' }}
-    withLabel: 'process_high'   {{ ext.instanceType = '{inst_high}'   }}
+    // Each withLabel block must include ALL ext.* fields — Nextflow does not
+    // merge the global ext with a label-specific ext block.
+    withLabel: 'process_single' {{
+        ext.instanceType = '{inst_single}'
+        ext.region       = '{region}'
+        ext.ttl          = '2h'
+        ext.ami          = '{ami_id}'
+    }}
+    withLabel: 'process_low' {{
+        ext.instanceType = '{inst_low}'
+        ext.region       = '{region}'
+        ext.ttl          = '2h'
+        ext.ami          = '{ami_id}'
+    }}
+    withLabel: 'process_medium' {{
+        ext.instanceType = '{inst_medium}'
+        ext.region       = '{region}'
+        ext.ttl          = '2h'
+        ext.ami          = '{ami_id}'
+    }}
+    withLabel: 'process_high' {{
+        ext.instanceType = '{inst_high}'
+        ext.region       = '{region}'
+        ext.ttl          = '2h'
+        ext.ami          = '{ami_id}'
+    }}
 
     // Fallback for unlabelled processes.
     ext.instanceType = '{inst_low}'
