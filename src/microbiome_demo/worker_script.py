@@ -157,7 +157,29 @@ export HOME=/root
 # ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
 # Nextflow pf4j requires class files in a classes/ subdirectory.
 # This fixes AMIs baked before the correct structure was implemented.
-NF_SPAWN_PLUGIN_DIR="/opt/nextflow_cache/plugins/nf-spawn-0.2.1"
+# ── Upgrade nf-spawn if the installed version is older than 0.2.1 ────────────
+# Build from source to ensure we have the latest fixes (S3 staging, user-data).
+TARGET_NF_SPAWN_VERSION="0.2.1"
+NF_PLUGIN_DIR="/opt/nextflow_cache/plugins"
+if [ ! -d "${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}" ]; then
+    echo "Installing nf-spawn v${TARGET_NF_SPAWN_VERSION}..."
+    mkdir -p /opt/nf-spawn-upgrade && cd /opt/nf-spawn-upgrade
+    git clone --depth 1 --branch "v${TARGET_NF_SPAWN_VERSION}" \
+        https://github.com/spore-host/nf-spawn.git . 2>/dev/null \
+        || git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
+    gradle wrapper --gradle-version 8.8 2>&1 | tail -3
+    ./gradlew jar 2>&1 | tail -5
+    BUILT_JAR=$(ls build/libs/nf-spawn-*.jar | head -1)
+    PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
+    mkdir -p "${PLUGIN_DEST}/classes"
+    cd "${PLUGIN_DEST}/classes"
+    unzip -q /opt/nf-spawn-upgrade/${BUILT_JAR}
+    echo "nf-spawn ${TARGET_NF_SPAWN_VERSION} installed."
+    cd -
+fi
+
+NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
+
 if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.1.jar" ]; then
     # Bare JAR: explode it into classes/
     echo "Fixing nf-spawn plugin: exploding JAR into classes/..."
