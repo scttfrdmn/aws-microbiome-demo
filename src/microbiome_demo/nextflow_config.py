@@ -51,7 +51,9 @@ process {{
         ext.region       = '{region}'
         ext.ttl          = '2h'
         ext.ami          = '{ami_id}'
-        ext.volumeSize   = {volume_size}
+        // fasterq-dump needs: SRA file (~14GB) + temp files (~3x SRA) + FASTQ output
+        // 80GB gives comfortable headroom; task instances don't need the databases
+        ext.volumeSize   = 80
     }}
     withLabel: 'process_low' {{
         ext.instanceType = '{inst_low}'
