@@ -144,6 +144,10 @@ PROGRESS_KEY="results/${JOB_NAME}/progress.json"
 
 # ── Ensure PATH includes tool install locations ──────────────────────────────
 export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
+# AWS_DEFAULT_REGION is required by the spawn CLI for STS credential discovery.
+# The EC2 instance profile provides credentials; the region must be set explicitly.
+export AWS_DEFAULT_REGION="@@REGION@@"
+export AWS_REGION="@@REGION@@"
 
 # ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
 # Nextflow pf4j requires class files in a classes/ subdirectory.
