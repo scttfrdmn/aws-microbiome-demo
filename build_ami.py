@@ -176,9 +176,12 @@ mkdir -p "${PLUGIN_DEST}/classes"
 cd "${PLUGIN_DEST}/classes"
 unzip -q "${OLDPWD}/${BUILT_JAR}"
 cd -
-# Fix the version field in nextflow.plugins to match the plugin dir name.
-sed -i "s/^version=.*/version=${NF_SPAWN_VERSION}/" \
-    "${PLUGIN_DEST}/classes/META-INF/nextflow.plugins"
+# Fix the version field in nextflow.plugins if it exists (pf4j legacy format).
+# v0.2.0+ uses extensions.idx instead, so this file may be absent.
+if [ -f "${PLUGIN_DEST}/classes/META-INF/nextflow.plugins" ]; then
+    sed -i "s/^version=.*/version=${NF_SPAWN_VERSION}/" \
+        "${PLUGIN_DEST}/classes/META-INF/nextflow.plugins"
+fi
 echo "nf-spawn installed (exploded into classes/): ${PLUGIN_DEST}"
 find "${PLUGIN_DEST}" -type f
 
