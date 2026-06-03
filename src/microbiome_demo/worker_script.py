@@ -150,6 +150,9 @@ export AWS_DEFAULT_REGION="@@REGION@@"
 export AWS_REGION="@@REGION@@"
 # Force regional STS endpoint to avoid VPC endpoint routing issues.
 export AWS_STS_REGIONAL_ENDPOINTS=regional
+# HOME is required by spawn CLI to locate its config directory.
+# Nextflow tasks run in a context where HOME may not be set.
+export HOME=/root
 
 # ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
 # Nextflow pf4j requires class files in a classes/ subdirectory.

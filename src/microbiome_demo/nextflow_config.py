@@ -76,6 +76,15 @@ process {{
     ext.region       = '{region}'
     ext.ttl          = '2h'
     ext.ami          = '{ami_id}'
+
+    // Environment variables inherited by all nf-spawn task submissions.
+    // HOME is required by the spawn CLI to locate its config directory.
+    environment = [
+        HOME:                       '/root',
+        AWS_DEFAULT_REGION:         '{region}',
+        AWS_REGION:                 '{region}',
+        AWS_STS_REGIONAL_ENDPOINTS: 'regional',
+    ]
 }}
 
 executor {{
