@@ -1,4 +1,4 @@
-# HMP Microbiome Demo — Live AWS Metagenomics Analysis
+# HMP Microbiome Demo — Live AWS Analysis
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -6,48 +6,135 @@
 [![AWS Graviton3](https://img.shields.io/badge/AWS-Graviton3-orange.svg)](https://aws.amazon.com/ec2/graviton/)
 [![spawn](https://img.shields.io/badge/powered%20by-spawn-5c5cff.svg)](https://spore.host)
 
-A five-minute live demo that runs **real** AWS compute against **real** Human Microbiome
-Project data and shows every dollar as it happens.
+A live demo that runs **real** AWS compute against **real** Human Microbiome Project data
+and shows every dollar as it happens.
 
-**What it does:**
-1. Launches 8× Graviton3 `c7g.4xlarge` instances via [spawn](https://spore.host), each running
-   [nf-core/taxprofiler](https://nf-co.re/taxprofiler) (Kraken2 + MetaPhlAn) against a pre-baked AMI.
-2. Each worker pulls its assigned HMP samples **directly from RODA**
-   (`s3://sra-pub-run-odp/`) — no data staging, no copying, no S3 storage cost for the data.
-3. Streams live progress to a local dashboard — cost meter ticking, worker dots going green.
-4. When done, calls Bedrock Claude Sonnet to synthesize three plain-language insights.
+---
 
-**Target runtime:** ~15-20 minutes wall clock for 100 samples across 3 body sites.
+## What happens during the demo
+
+### Beat 1 — Start Analysis
+
+Pressing **Start Analysis** triggers:
+
+1. **vCPU quota query** via [truffle](https://spore.host) — the account's actual EC2 quota
+   determines the Nextflow `queueSize` (max concurrent tasks)
+2. **Head node launch** — a single `t4g.small` instance launches via
+   [spawn](https://spore.host).  It runs Nextflow with the
+   [nf-spawn](https://github.com/spore-host/nf-spawn) executor plugin.
+
+### Beat 2 — Per-sample EC2 instances appear
+
+Nextflow reads the 100-sample samplesheet and dispatches tasks.
+For each HMP sample, **nf-spawn launches a dedicated EC2 instance**:
+
+```
+FETCH_FASTQ  →  t4g.medium  (SRA download + fasterq-dump)
+```
+
+Each instance:
+- Reads its SRA file **directly from RODA** (`s3://sra-pub-run-odp/`) — no staging, no copying, $0 data cost
+- Converts SRA → FASTQ using fasterq-dump (inside the nf-core/taxprofiler Docker container)
+- Writes FASTQs to the S3 work directory
+- Self-terminates when done
+
+The dashboard shows instances appearing in spawn list as the queue fills.
+
+### Beat 3 — Classification pipeline
+
+Once FASTQs are staged in S3, nf-core/taxprofiler runs — again dispatching
+**one EC2 instance per task**:
+
+```
+fastp/FastQC  →  t4g.large   (quality trimming)
+Kraken2       →  c7g.4xlarge (needs 32 GB RAM; database pre-staged on AMI)
+MetaPhlAn     →  c7g.2xlarge (marker gene profiling)
+MultiQC       →  t4g.large   (report generation)
+```
+
+Intermediate FASTQs pass through the shared S3 work directory — no instance
+talks directly to another.
+
+### Beat 4 — Bedrock synthesis
+
+When all samples complete, Bedrock Claude Sonnet reads the classification results
+and generates three plain-language insights about microbiome diversity across the
+three body sites (gut/stool, oral, nasal).
+
+---
+
+## Architecture
+
+```
+Local machine (FastAPI dashboard)
+        │
+        ▼
+Head node  t4g.small  (Nextflow + nf-spawn plugin)
+        │
+        ├── FETCH_FASTQ ×100   t4g.medium  ──► RODA (s3://sra-pub-run-odp/)
+        │       [parallel, up to queueSize at once]      no egress, $0 data
+        │
+        ├── fastp/FastQC ×100  t4g.large
+        ├── Kraken2 ×100       c7g.4xlarge  (Kraken2 DB pre-staged on AMI)
+        ├── MetaPhlAn ×100     c7g.2xlarge
+        └── MultiQC ×1         t4g.large
+                │
+                ▼
+        S3 results bucket  →  Bedrock Claude Sonnet  →  3 insights
+```
+
+All intermediate data (FASTQs, trimmed reads, classification outputs) passes
+through the S3 work directory (`s3://bucket/work/job/`).  Every task instance
+self-terminates after writing its outputs to S3.
+
+---
 
 ## Prerequisites
 
 ```bash
-brew install spore-host/tap/spawn   # the spawn CLI (auto-provisions EC2)
-brew install uv                     # fast Python package manager
+brew install spore-host/tap/spawn   # spawn CLI — launches EC2 instances
+brew install uv                     # Python package manager
 ```
 
-AWS credentials configured as the `aws` profile (`~/.aws/credentials`).  Needs EC2,
-S3, and Bedrock permissions.
+AWS credentials configured as the `aws` profile.  Needs EC2, S3, Bedrock,
+and EC2 Service Quotas permissions.
+
+---
 
 ## Setup (run once before the talk)
 
 ```bash
 cp config.example.py config.py
-# edit config.py: set REGION, ACCOUNT_ID, BUCKET
+# Edit config.py: set REGION, ACCOUNT_ID, BUCKET
 make install
 ```
 
 ### Bake the AMI
 
-Builds an Amazon Linux 2023 ARM64 AMI with Nextflow, nf-core/taxprofiler Singularity image,
-and the Kraken2 `k2_pluspf_16GB` database pre-staged — so demo instances boot ready to run.
+The AMI pre-installs everything so task instances boot ready to run — no
+software download during the demo:
+
+- Nextflow + nf-spawn plugin (Nextflow executor for spawn)
+- Kraken2 `k2_pluspf_16GB` database (11.9 GB → pre-staged on EBS)
+- spawn CLI (for the head node to dispatch tasks)
+- Docker (nf-core containers run inside Docker)
+- Python + boto3 (for S3 progress reporting)
 
 ```bash
-make ami             # ~30-45 minutes, ~$1-2 EC2 cost
-# After completion, paste the AMI_ID into config.py
+make ami        # ~2-3 hours, ~$2-3 EC2 cost (c7g.4xlarge bake instance)
+# Paste the printed AMI_ID into config.py
 ```
 
-That's it — no corpus staging step.  Workers pull HMP data from RODA at runtime.
+The bake takes longer than typical because the Kraken2 database download
+(11.9 GB from a public S3 bucket) is the bottleneck.
+
+### Rehearse without AWS
+
+```bash
+make demo-fake  # simulates the full pipeline with fake data, no AWS calls
+```
+
+---
 
 ## Running the demo
 
@@ -55,72 +142,84 @@ That's it — no corpus staging step.  Workers pull HMP data from RODA at runtim
 make demo
 ```
 
-Opens a browser to `http://127.0.0.1:8000`.  Press **Start Analysis** to launch the job.
+Opens `http://127.0.0.1:8001` automatically.  Press **Start Analysis**.
+
+Expected timeline for 100 samples:
+- **0-5 min** — vCPU quota query, head node launch, nf-spawn plugin load
+- **5-20 min** — FETCH_FASTQ instances downloading SRA files from RODA
+- **20-35 min** — Kraken2 + MetaPhlAn classification (parallel)
+- **35-40 min** — MultiQC + Bedrock synthesis
+
+---
 
 ## Teardown
 
 ```bash
-make teardown        # stops any running instances, deletes the S3 results bucket
+make teardown   # stops any running instances, empties + deletes the S3 bucket
 ```
 
-The S3 bucket holds only tiny SRR slice lists and result JSONs (~a few MB total).
-The AMI itself is not deleted automatically (no ongoing hourly charge; EBS snapshots
-cost ~$0.05/GB-month).  Deregister manually if desired:
+The S3 bucket holds only Nextflow work files and result JSONs (a few GB at most,
+cleaned up immediately after the demo).
+
+The AMI is **not** deleted automatically — EBS snapshots cost ~$0.05/GB-month
+(about $2/month for the 40 GB snapshot).  Deregister when you're done with it:
 
 ```bash
 aws ec2 deregister-image --image-id <AMI_ID> --region us-east-1
 ```
 
-## Project layout
+---
 
-```
-build_ami.py            bake the pre-installed worker AMI
-teardown.py             clean up all AWS resources
-config.example.py       copy → config.py and fill in
+## Cost estimate (100 samples)
 
-src/microbiome_demo/
-  accessions.py         curated HMP SRR accession list (34 stool, 33 oral, 33 nasal)
-  app.py                FastAPI server: /ws WebSocket + /api/start + /api/results
-  spawn.py              programmatic wrapper around the spawn CLI
-  pipeline.py           poll S3 for Nextflow progress; compute EC2 cost
-  agent.py              Bedrock Sonnet synthesis of microbiome analysis results
-  worker_script.py      generates the cloud-init bash script for each EC2 instance
-                        (pulls SRA files directly from RODA, no staging)
-  static/index.html     Alpine.js live dashboard (no build step)
+| Component | Qty | Duration | Cost |
+|-----------|-----|----------|------|
+| Head node (t4g.small) | 1 | ~40 min | ~$0.01 |
+| FETCH_FASTQ (t4g.medium) | 100 | ~15 min each | ~$0.84 |
+| fastp/FastQC (t4g.large) | 100 | ~5 min each | ~$0.56 |
+| Kraken2 (c7g.4xlarge) | 100 | ~10 min each | ~$9.67 |
+| MetaPhlAn (c7g.2xlarge) | 100 | ~8 min each | ~$4.35 |
+| MultiQC (t4g.large) | 1 | ~2 min | ~$0.002 |
+| Bedrock Sonnet synthesis | 1 call | — | ~$0.003 |
+| HMP data from RODA | — | — | **$0** |
 
-tests/                  pytest suite (no AWS calls; uses fakes)
-Makefile                shortcuts for all common operations
-```
+**Total per run: ~$15.**  This is the "do it for real" cost.  For a rehearsal,
+`SAMPLE_COUNT=5` reduces it to ~$1.
 
-## Cost estimate
+---
 
-| Component | Cost |
-|-----------|------|
-| 8× c7g.4xlarge × 20 min | ~$1.74 |
-| Bedrock Sonnet synthesis | ~$0.003 |
-| S3 results storage (~5 MB of JSON) | negligible |
-| AMI bake (one-time) | ~$1-2 |
-| HMP data (from RODA) | **$0** — public dataset, no egress within us-east-1 |
+## Why RODA?
 
-**Total per demo run: ~$1.74.**
+[SRA Open Data](https://registry.opendata.aws/ncbi-sra/) (`s3://sra-pub-run-odp/`)
+is hosted by AWS in `us-east-1`.  EC2 instances in the same region read it at full
+S3 bandwidth with **no egress charges**.  Every FETCH_FASTQ instance reads its own
+sample independently — no coordination, no staging, no copying.  This is what a
+public data commons is for.
 
-## Why read from RODA directly?
+## Why Nextflow + nf-spawn?
 
-[SRA Open Data](https://registry.opendata.aws/ncbi-sra/) (`s3://sra-pub-run-odp/`) is an
-AWS public dataset hosted in `us-east-1`.  EC2 instances in the same region read it at
-full S3 bandwidth with no data transfer fees.  There is no reason to copy 10 GB of SRA
-files into your own bucket first — that would waste time, storage cost, and defeat the
-purpose of a public data commons.
+Nextflow provides the workflow DAG (task dependencies, retry logic, work dir management).
+nf-spawn replaces the Nextflow executor — instead of AWS Batch or a Slurm cluster,
+each task gets its own ephemeral EC2 instance via [spawn](https://spore.host).
+
+This means:
+- No queue to configure, no compute environment to maintain
+- Instances are purpose-sized per task (Kraken2 needs 32 GB RAM; fasterq-dump doesn't)
+- Every instance self-terminates the moment its task completes
+- Cost is per-second, per-task — no idle capacity
 
 ## Why k2_pluspf_16GB?
 
 Kraken2's `k2_pluspf` database includes bacteria, archaea, viruses, fungi, and protozoa —
-everything relevant for human microbiome profiling.  At 11.9 GB compressed → 16 GB
-uncompressed, it fits entirely in the 32 GB RAM of a `c7g.4xlarge`, enabling in-memory
-classification which is the throughput bottleneck for Kraken2.
+everything relevant for human gut, oral, and nasal microbiome profiling.
+At 11.9 GB compressed → 16 GB uncompressed, it fits entirely in the 32 GB RAM of a
+`c7g.4xlarge`, enabling in-memory classification (the Kraken2 throughput bottleneck).
+
+The full standard database (75 GB) adds plant genomes and irrelevant taxa and doesn't
+fit in 32 GB RAM without paging.
 
 ## Why ARM64 / Graviton3?
 
-Graviton3 `c7g` instances deliver ~30% better price-performance than equivalent x86
-`c5` instances for CPU-bound bioinformatics workloads like Kraken2.  Nextflow and
-Singularity both support ARM64.  The nf-core/taxprofiler container has ARM64 images.
+Graviton3 `c7g` instances deliver ~30-40% better price/performance than equivalent
+x86 `c5` instances for CPU-bound bioinformatics workloads.  Nextflow, Docker, and
+all nf-core containers support ARM64.
