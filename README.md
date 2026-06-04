@@ -220,6 +220,8 @@ fit in 32 GB RAM without paging.
 
 ## Why ARM64 / Graviton3?
 
-Graviton3 `c7g` instances deliver ~30-40% better price/performance than equivalent
-x86 `c5` instances for CPU-bound bioinformatics workloads.  Nextflow, Docker, and
-all nf-core containers support ARM64.
+Graviton3 `c7g` instances deliver comparable or better price/performance versus
+`c7i` (Intel Ice Lake) at the same vCPU/RAM spec, at ~20% lower cost per hour —
+and significantly lower than `c8g` (Graviton4) for workloads that don't need the
+extra single-thread performance.  Nextflow, Docker, and all nf-core containers
+support ARM64.
