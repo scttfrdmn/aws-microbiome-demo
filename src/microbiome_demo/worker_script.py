@@ -86,8 +86,8 @@ process FETCH_FASTQ {
     # nf-spawn runs the task script on the OS, not inside a container,
     # so invoke Docker explicitly for fasterq-dump.
     docker run --rm \
-        -v \${PWD}:/work -w /work \
-        community.wave.seqera.io/library/sra-tools_pigz:12a31f9df8d48e54 \
+        -v \\${PWD}:/work -w /work \
+        ncbi/sra-tools:latest \
         fasterq-dump --threads 2 --split-files --gzip --outdir /work ./${srr}.sra
     rm -f ./${srr}.sra
 
