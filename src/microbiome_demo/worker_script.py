@@ -83,7 +83,12 @@ process FETCH_FASTQ {
     aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr} ./${srr}.sra \\
         --no-sign-request --region us-east-1 --no-progress
 
-    fasterq-dump --threads 2 --split-files --gzip --outdir . ./${srr}.sra
+    # nf-spawn runs the task script on the OS, not inside a container,
+    # so invoke Docker explicitly for fasterq-dump.
+    docker run --rm \
+        -v $(pwd):/work -w /work \
+        community.wave.seqera.io/library/sra-tools_pigz:12a31f9df8d48e54 \
+        fasterq-dump --threads 2 --split-files --gzip --outdir /work ./${srr}.sra
     rm -f ./${srr}.sra
 
     # Rename to stable sample_id prefix (handle both paired and single-end)
