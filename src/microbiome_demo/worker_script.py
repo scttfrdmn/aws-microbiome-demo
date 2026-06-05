@@ -91,8 +91,8 @@ process FETCH_FASTQ {
         fasterq-dump --threads 2 --split-files --outdir /work ./${srr}.sra
     # Compress FASTQs (pigz is faster than gzip; fall back to gzip if not available)
     for f in ./*.fastq; do
-        [ -f "\$f" ] || continue
-        pigz -p 2 "\$f" 2>/dev/null || gzip "\$f"
+        [ -f "\\$f" ] || continue
+        pigz -p 2 "\\$f" 2>/dev/null || gzip "\\$f"
     done
     rm -f ./${srr}.sra
 
