@@ -178,7 +178,7 @@ fi
 # This fixes AMIs baked before the correct structure was implemented.
 # ── Upgrade nf-spawn if the installed version is older than 0.2.1 ────────────
 # Build from source to ensure we have the latest fixes (S3 staging, user-data).
-TARGET_NF_SPAWN_VERSION="0.2.5"
+TARGET_NF_SPAWN_VERSION="0.2.6"
 NF_PLUGIN_DIR="/opt/nextflow_cache/plugins"
 if [ ! -d "${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}" ]; then
     echo "Installing nf-spawn v${TARGET_NF_SPAWN_VERSION}..."
@@ -199,13 +199,13 @@ fi
 
 NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
 
-if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.5.jar" ]; then
+if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.6.jar" ]; then
     # Bare JAR: explode it into classes/
     echo "Fixing nf-spawn plugin: exploding JAR into classes/..."
     mkdir -p "${NF_SPAWN_PLUGIN_DIR}/classes"
     cd "${NF_SPAWN_PLUGIN_DIR}/classes"
-    unzip -q "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.5.jar"
-    rm "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.5.jar"
+    unzip -q "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.6.jar"
+    rm "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.6.jar"
     sed -i 's/^version=.*/version=0.2.2/' META-INF/nextflow.plugins 2>/dev/null || true
     cd -
     echo "nf-spawn plugin fixed."
