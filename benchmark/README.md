@@ -41,25 +41,48 @@ it's measured and reported, but it isn't part of the "aarchbio unblocks it" clai
 
 1. **x86 baseline** — on the pre-diff-(b) config (all x86), `SAMPLE_COUNT=5`.
    Set `HEAD_INSTANCE_TYPE = "c7i.large"` (config.py default). Run the demo, then
-   pull the trace:
+   pull the trace **and the data-movement timings**:
    ```
    SAMPLE_COUNT=5 AWS_PROFILE=aws uv run python run_headless.py
    aws s3 cp s3://$BUCKET/results/$JOB_NAME/trace.tsv benchmark/results/x86.tsv
+   aws s3 cp s3://$BUCKET/results/$JOB_NAME/staging/ benchmark/results/x86-staging/ --recursive
    ```
 2. **arm64** — apply diff (b) to `nextflow_config.py`, set
    `HEAD_INSTANCE_TYPE = "c7g.large"`, set `AMI_ID_ARM64` to the rebaked AMI, then:
    ```
    SAMPLE_COUNT=5 AWS_PROFILE=aws uv run python run_headless.py
    aws s3 cp s3://$BUCKET/results/$JOB_NAME/trace.tsv benchmark/results/arm64.tsv
+   aws s3 cp s3://$BUCKET/results/$JOB_NAME/staging/ benchmark/results/arm64-staging/ --recursive
    ```
    (This run *is* the diff-(b) rehearsal — it exercises every step native: light
    steps on the rebaked AMI, the Kraken2 mull doing real classification, and the
    `ubuntu:20.04` override for the standard-report step.)
-3. **Diff** the two traces:
+3. **Diff** the two traces, including the data-movement section:
    ```
    python benchmark/diff_traces.py benchmark/results/x86.tsv benchmark/results/arm64.tsv \
+       --x86-staging benchmark/results/x86-staging \
+       --arm64-staging benchmark/results/arm64-staging \
        --json benchmark/results/comparison.json --n 5
    ```
+
+## Data movement (staging from sources)
+
+Beyond the per-stage compute table, each FETCH_FASTQ task emits a per-sample
+`results/<job>/staging/<sample>.timings.json` capturing **how much data and how
+long to stage + process from the source**:
+
+| field | meaning |
+|-------|---------|
+| `roda_download_s` / `roda_bytes` / `roda_mbps` | pulling the SRA from RODA (`s3://sra-pub-run-odp/`) — the source-staging cost + throughput |
+| `fasterq_dump_s` | SRA → FASTQ conversion time |
+| `pigz_s` / `fastq_gz_bytes` | compression time + compressed output size |
+| `instance_type`, `vcpus`, `net_driver`, `az`, `lifecycle`, `arch` | **environment provenance** — these times are placement/network-dependent, so every number is qualified by where it ran |
+
+`diff_traces.py --x86-staging/--arm64-staging` aggregates these into a
+data-movement summary (median throughput + phase times per leg, with the env
+line). Times are inherently variable by instance type, ENA bandwidth, AZ, and
+RODA-side load — the env block is printed so the numbers are interpretable, not
+treated as absolute.
 
 ## Honesty requirements (baked into diff_traces.py)
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 
@@ -207,6 +208,67 @@ def stage_stats(rows: list[dict], leg: str) -> dict[str, dict]:
     return out
 
 
+def load_staging_timings(path: str) -> list[dict]:
+    """Load per-sample timings.json files (one dir of FETCH_FASTQ data-movement
+    records emitted by the pipeline to results/<job>/staging/).
+
+    Each record carries environment provenance (instance_type, vcpus, net_driver,
+    az, lifecycle, arch) plus the data-movement phases: roda_download_s/_bytes/
+    _mbps (the source-staging cost), fasterq_dump_s, pigz_s, fastq_gz_bytes.
+    Accepts a directory of *.timings.json or a single concatenated JSON-lines file.
+    """
+    import glob
+    records = []
+    if os.path.isdir(path):
+        files = sorted(glob.glob(os.path.join(path, "*.timings.json")))
+        for f in files:
+            try:
+                with open(f) as fh:
+                    records.append(json.load(fh))
+            except Exception:  # noqa: BLE001
+                continue
+    elif os.path.isfile(path):
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except Exception:  # noqa: BLE001
+                        continue
+    return records
+
+
+def _med(vals: list[float]) -> float | None:
+    vals = [v for v in vals if isinstance(v, (int, float))]
+    return round(statistics.median(vals), 2) if vals else None
+
+
+def report_staging(records: list[dict], leg: str) -> None:
+    """Print the data-movement (source staging + convert + compress) summary for
+    one leg, with environment provenance so the times are interpretable."""
+    if not records:
+        return
+    envs = sorted({r.get("instance_type", "?") for r in records})
+    drivers = sorted({r.get("net_driver", "?") for r in records})
+    azs = sorted({r.get("az", "?") for r in records})
+    lifecycles = sorted({r.get("lifecycle", "?") for r in records})
+    arches = sorted({r.get("arch", "?") for r in records})
+    print(f"\n  ── Data movement — {leg} leg (N={len(records)}) ──")
+    print(f"     env: instance={','.join(envs)} arch={','.join(arches)} "
+          f"net={','.join(drivers)} az={','.join(azs)} lifecycle={','.join(lifecycles)}")
+    dl_s = _med([r.get('roda_download_s') for r in records])
+    dl_mbps = _med([r.get('roda_mbps') for r in records])
+    dl_gb = _med([r.get('roda_bytes', 0)/1e9 for r in records])
+    fq_s = _med([r.get('fasterq_dump_s') for r in records])
+    gz_s = _med([r.get('pigz_s') for r in records])
+    gz_gb = _med([r.get('fastq_gz_bytes', 0)/1e9 for r in records])
+    print(f"     RODA download (source pull): median {dl_s}s, {dl_mbps} MB/s, {dl_gb} GB median")
+    print(f"     fasterq-dump (SRA→FASTQ):    median {fq_s}s")
+    print(f"     pigz (compress):             median {gz_s}s, {gz_gb} GB out median")
+    print("     (times are instance/network-dependent — qualified by the env line above)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -214,6 +276,9 @@ def main() -> None:
     ap.add_argument("arm64_trace", help="trace.tsv from the all-Graviton (c7g/r7g) N=5 run")
     ap.add_argument("--json", help="also write the full comparison as JSON to this path")
     ap.add_argument("--n", type=int, default=5, help="samples per leg (for the pilot note)")
+    ap.add_argument("--x86-staging", help="dir of x86 leg *.timings.json (data-movement records)")
+    ap.add_argument("--arm64-staging",
+                    help="dir of arm64 leg *.timings.json (data-movement records)")
     args = ap.parse_args()
 
     x86_rows = load_trace(args.x86_trace)
@@ -280,6 +345,15 @@ def main() -> None:
         ar = as_["peak_rss_mb"] if as_ and as_["peak_rss_mb"] is not None else "—"
         print(f"      {s:17} {xr} / {ar}")
 
+    # Data-movement (source staging + convert + compress) per leg, if timings
+    # were captured. This is the "how long / how much to stage from sources"
+    # view, separate from the per-stage compute table above.
+    x86_staging = load_staging_timings(args.x86_staging) if args.x86_staging else []
+    arm_staging = load_staging_timings(args.arm64_staging) if args.arm64_staging else []
+    if x86_staging or arm_staging:
+        report_staging(x86_staging, "x86")
+        report_staging(arm_staging, "arm64")
+
     print("\n    Reading: per-stage is the real story — Kraken2 (memory-bound) is the")
     print("    swing factor we couldn't predict from price alone. Negative (arm64-")
     print("    slower) stages, if any, are flagged above and kept in.")
@@ -290,10 +364,13 @@ def main() -> None:
             json.dump({
                 "n_samples_per_leg": args.n,
                 "note": "PILOT. Both legs native (no emulation). Median realtime; "
-                        "cost = Σ task duration × on-demand $/hr.",
+                        "cost = Σ task duration × on-demand $/hr. Staging records carry "
+                        "per-instance env (instance_type/net_driver/az) — times are "
+                        "placement-dependent and qualified by it.",
                 "prices_usd_per_hr": PRICE_USD_PER_HR,
                 "per_stage": comparison,
                 "total_cost_usd": {"x86": round(tot_x, 4), "arm64": round(tot_a, 4)},
+                "data_movement": {"x86": x86_staging, "arm64": arm_staging},
             }, f, indent=2)
         print(f"    Wrote {args.json}")
 
