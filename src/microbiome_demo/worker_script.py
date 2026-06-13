@@ -61,9 +61,8 @@ nextflow.enable.dsl = 2
 
 process FETCH_FASTQ {
     label 'process_single'
-    // SRA toolkit container — includes fasterq-dump with S3 support.
-    // Wave/Seqera registry: sra-tools + pigz for gzip compression.
-    container 'community.wave.seqera.io/library/sra-tools_pigz:12a31f9df8d48e54'
+    // No container directive — this process invokes Docker explicitly in the
+    // script body (ncbi/sra-tools) because it also needs aws CLI on the host.
 
     input:
     tuple val(sample_id), val(srr), val(body_site)
@@ -83,18 +82,17 @@ process FETCH_FASTQ {
     aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr} ./${srr}.sra \\
         --no-sign-request --region us-east-1 --no-progress
 
-    # nf-spawn runs the task script on the OS, not inside a container,
-    # so invoke Docker explicitly for fasterq-dump.
+    # Invoke Docker explicitly — fasterq-dump runs inside ncbi/sra-tools
+    # while aws s3 cp above uses the host aws CLI.
     docker run --rm \
         -v \\${PWD}:/work -w /work \
         ncbi/sra-tools:latest \
         fasterq-dump --threads 2 --split-files --outdir /work ./${srr}.sra
-    # Rename .fastq → .fastq.gz naming convention without actually compressing —
-    # nf-core/taxprofiler accepts .fastq files; the .gz suffix just satisfies the
-    # samplesheet validator. For the demo we skip compression to save ~30 min.
+    # Compress FASTQs — taxprofiler requires real gzip content, not renamed files.
+    # pigz uses all available cores; on c7g.large (~2 vCPU) this takes ~3-5 min.
     for f in ./*.fastq; do
         [ -f "\\$f" ] || continue
-        mv "\\$f" "\\${f}.gz"
+        pigz -p 2 "\\$f"
     done
     rm -f ./${srr}.sra
 
@@ -124,8 +122,10 @@ workflow {
     FETCH_FASTQ.out
         .map { sample_id, body_site, fq1, fq2 ->
             def run_acc = sample_id.replaceAll('_[^_]+\\$', '')
-            def fq2_val = fq2 ? fq2.toString() : ''
-            "${sample_id},${run_acc},ILLUMINA,${fq1},${fq2_val},"
+            // Use toUriString() to preserve s3:// scheme — toString() strips it
+            def fq1_val = fq1.toUriString()
+            def fq2_val = fq2 ? fq2.toUriString() : ''
+            "${sample_id},${run_acc},ILLUMINA,${fq1_val},${fq2_val},"
         }
         .collectFile(
             name:    params.samplesheet_out ?: 'samplesheet_for_taxprofiler.csv',
@@ -173,51 +173,49 @@ if [ ! -f /root/.ssh/id_rsa ]; then
     ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N '' 2>&1
 fi
 
-# ── Fix nf-spawn plugin structure (AMI compatibility fix) ────────────────────
-# Nextflow pf4j requires class files in a classes/ subdirectory.
-# This fixes AMIs baked before the correct structure was implemented.
-# ── Upgrade nf-spawn if the installed version is older than 0.2.1 ────────────
-# Build from source to ensure we have the latest fixes (S3 staging, user-data).
-TARGET_NF_SPAWN_VERSION="0.2.6"
+# ── Install nf-spawn plugin from pre-built release ZIP ───────────────────────
+# Releases publish a pre-built ZIP with the correct classes/ structure.
+# No build step needed — just download and unzip.
+TARGET_NF_SPAWN_VERSION="0.2.9"
 NF_PLUGIN_DIR="/opt/nextflow_cache/plugins"
-if [ ! -d "${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}" ]; then
-    echo "Installing nf-spawn v${TARGET_NF_SPAWN_VERSION}..."
-    mkdir -p /opt/nf-spawn-upgrade && cd /opt/nf-spawn-upgrade
-    git clone --depth 1 --branch "v${TARGET_NF_SPAWN_VERSION}" \
-        https://github.com/spore-host/nf-spawn.git . 2>/dev/null \
-        || git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
-    gradle wrapper --gradle-version 8.8 2>&1 | tail -3
-    ./gradlew jar 2>&1 | tail -5
-    BUILT_JAR=$(ls build/libs/nf-spawn-*.jar | head -1)
-    PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
-    mkdir -p "${PLUGIN_DEST}/classes"
-    cd "${PLUGIN_DEST}/classes"
-    unzip -q /opt/nf-spawn-upgrade/${BUILT_JAR}
+NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
+if [ ! -d "${NF_SPAWN_PLUGIN_DIR}/classes" ]; then
+    echo "Installing nf-spawn v${TARGET_NF_SPAWN_VERSION} from release ZIP..."
+    ZIP_URL="https://github.com/spore-host/nf-spawn/releases/download/v${TARGET_NF_SPAWN_VERSION}/nf-spawn-${TARGET_NF_SPAWN_VERSION}.zip"
+    mkdir -p "${NF_SPAWN_PLUGIN_DIR}"
+    curl -fsSL "${ZIP_URL}" -o /tmp/nf-spawn.zip
+    unzip -q /tmp/nf-spawn.zip -d "${NF_SPAWN_PLUGIN_DIR}"
+    rm /tmp/nf-spawn.zip
     echo "nf-spawn ${TARGET_NF_SPAWN_VERSION} installed."
-    cd -
 fi
 
-NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
-
-if [ -f "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.6.jar" ]; then
-    # Bare JAR: explode it into classes/
-    echo "Fixing nf-spawn plugin: exploding JAR into classes/..."
-    mkdir -p "${NF_SPAWN_PLUGIN_DIR}/classes"
-    cd "${NF_SPAWN_PLUGIN_DIR}/classes"
-    unzip -q "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.6.jar"
-    rm "${NF_SPAWN_PLUGIN_DIR}/nf-spawn-0.2.6.jar"
-    sed -i 's/^version=.*/version=0.2.2/' META-INF/nextflow.plugins 2>/dev/null || true
-    cd -
-    echo "nf-spawn plugin fixed."
-elif [ -d "${NF_SPAWN_PLUGIN_DIR}/io" ]; then
-    # Classes at root level (not in classes/): move them
-    echo "Fixing nf-spawn plugin: moving classes to classes/ subdirectory..."
-    mkdir -p "${NF_SPAWN_PLUGIN_DIR}/classes"
-    mv "${NF_SPAWN_PLUGIN_DIR}/io" "${NF_SPAWN_PLUGIN_DIR}/classes/io" 2>/dev/null || true
-    mv "${NF_SPAWN_PLUGIN_DIR}/META-INF" "${NF_SPAWN_PLUGIN_DIR}/classes/META-INF" 2>/dev/null || true
-    sed -i 's/^version=.*/version=0.2.2/' \
-        "${NF_SPAWN_PLUGIN_DIR}/classes/META-INF/nextflow.plugins" 2>/dev/null || true
-    echo "nf-spawn plugin fixed."
+# ── Upgrade spawn CLI to latest release ──────────────────────────────────────
+# Always run the latest spawn so bug fixes are live without a full AMI rebake.
+CURRENT_SPAWN_VERSION=$(spawn version 2>/dev/null | awk '/^Version:/{print $2}' || echo "unknown")
+LATEST_SPAWN_VERSION=$(curl -fsSL "https://api.github.com/repos/spore-host/spawn/releases/latest" \
+    2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))" \
+    2>/dev/null || echo "")
+if [ -n "${LATEST_SPAWN_VERSION}" ] && [ "${CURRENT_SPAWN_VERSION}" != "${LATEST_SPAWN_VERSION}" ]; then
+    echo "Upgrading spawn: ${CURRENT_SPAWN_VERSION} → ${LATEST_SPAWN_VERSION}"
+    ARCH=$(uname -m)
+    case "${ARCH}" in
+        aarch64) SPAWN_ARCH="arm64" ;;
+        x86_64)  SPAWN_ARCH="amd64" ;;
+        *)        echo "Unknown arch ${ARCH}, skipping spawn upgrade"; SPAWN_ARCH="" ;;
+    esac
+    if [ -n "${SPAWN_ARCH}" ]; then
+        SPAWN_URL="https://github.com/spore-host/spawn/releases/download/v${LATEST_SPAWN_VERSION}/spawn_${LATEST_SPAWN_VERSION}_linux_${SPAWN_ARCH}.tar.gz"
+        TMP_DIR=$(mktemp -d)
+        curl -fsSL "${SPAWN_URL}" -o "${TMP_DIR}/spawn.tar.gz" \
+            && tar -xzf "${TMP_DIR}/spawn.tar.gz" -C "${TMP_DIR}" \
+            && chmod +x "${TMP_DIR}/spawn" \
+            && mv "${TMP_DIR}/spawn" /usr/local/bin/spawn \
+            && echo "spawn upgraded to $(spawn version 2>/dev/null | awk '/^Version:/{print $2}')" \
+            || echo "spawn upgrade failed — continuing with ${CURRENT_SPAWN_VERSION}"
+        rm -rf "${TMP_DIR}"
+    fi
+else
+    echo "spawn ${CURRENT_SPAWN_VERSION} is current"
 fi
 
 # ── Prerequisites check ──────────────────────────────────────────────────────
@@ -315,32 +313,45 @@ dnf install -y tmux 2>&1 | grep -E "^(Installing|Complete|Error)" || true
 # ── Run the pipeline in a tmux session ───────────────────────────────────────
 # tmux means Nextflow survives any SSH disconnect and can be reattached:
 #   ssh ec2-user@<ip> -t "tmux attach -t nf"
-# NXF_HOME points to the pre-pulled pipeline cache and exploded plugins on the AMI.
-tmux new-session -d -s nf -x 220 -y 50 2>/dev/null || true
-tmux send-keys -t nf "set -e
-# Stage 1: FETCH_FASTQ — download SRA from RODA and convert to FASTQ via nf-spawn
-echo '=== Stage 1: Fetching FASTQs from RODA ===' && \
+# Run both pipeline stages sequentially in the background as a single shell script.
+# This lets us wait on one PID that covers the full pipeline.
+cat > /tmp/nf-head/run_pipeline.sh << 'PIPEEOF'
+#!/bin/bash
+set -euo pipefail
+cd /tmp/nf-head
+
+echo "=== Stage 1: Fetching FASTQs from RODA ==="
 NXF_HOME=/opt/nextflow_cache \
     /usr/local/bin/nextflow run /tmp/nf-head/main.nf \
     --input /tmp/nf-head/samplesheet.csv \
     --samplesheet_dir /tmp/nf-head \
     --samplesheet_out samplesheet_for_taxprofiler.csv \
     -c /tmp/nf-head/nextflow.config \
-    -w s3://${BUCKET}/work/${JOB_NAME}/fetch/ && \
-echo '=== Stage 2: Running nf-core/taxprofiler ===' && \
+    -w "s3://${BUCKET}/work/${JOB_NAME}/fetch/"
+
+echo "=== Stage 2: Running nf-core/taxprofiler ==="
 NXF_HOME=/opt/nextflow_cache \
     /usr/local/bin/nextflow run nf-core/taxprofiler \
     --input /tmp/nf-head/samplesheet_for_taxprofiler.csv \
     --databases /tmp/nf-head/databases.csv \
-    --outdir ${RESULTS_PREFIX} \
+    --outdir "${RESULTS_PREFIX}" \
     -c /tmp/nf-head/nextflow.config \
-    -w s3://${BUCKET}/work/${JOB_NAME}/classify/ \
-    2>&1 | tee /tmp/nf-head/nextflow.stdout" Enter
+    -w "s3://${BUCKET}/work/${JOB_NAME}/classify/"
+PIPEEOF
+# Substitute shell variables now (the heredoc above deferred them)
+sed -i "s|\${BUCKET}|${BUCKET}|g; s|\${JOB_NAME}|${JOB_NAME}|g; s|\${RESULTS_PREFIX}|${RESULTS_PREFIX}|g" \
+    /tmp/nf-head/run_pipeline.sh
+chmod +x /tmp/nf-head/run_pipeline.sh
 
-# Give Nextflow a moment to start, then grab its PID for the monitor.
+# Run inside tmux so the session survives SSH disconnects, but also in the
+# background so we can track the PID.
+tmux new-session -d -s nf -x 220 -y 50 2>/dev/null || true
+tmux send-keys -t nf "/tmp/nf-head/run_pipeline.sh 2>&1 | tee /tmp/nf-head/nextflow.stdout; echo NF_EXIT:\$? > /tmp/nf-head/pipeline.exit" Enter
+
+# Give Nextflow a moment to start, then grab the tmux child PID.
 sleep 5
-NF_PID=$(pgrep -f "nextflow run" | head -1 || echo "0")
-echo "Nextflow PID: ${NF_PID}"
+NF_PID=$(pgrep -f "run_pipeline.sh" | head -1 || echo "0")
+echo "Pipeline PID: ${NF_PID}"
 
 # ── Progress monitor (runs alongside Nextflow) ───────────────────────────────
 # Polls the Nextflow trace file on S3 and the local .nextflow.log every 15s.
@@ -447,8 +458,10 @@ reports_done: set = set()
 while True:
     time.sleep(15)
 
-    nf_running = os.path.exists(f"/proc/{nf_pid}")
-    tasks      = read_trace()
+    # Pipeline is running while run_pipeline.sh is alive OR exit file not yet written
+    pipeline_done = os.path.exists("/tmp/nf-head/pipeline.exit")
+    nf_running    = not pipeline_done and os.path.exists(f"/proc/{nf_pid}")
+    tasks         = read_trace()
 
     running = sum(1 for t in tasks if t.get("status") == "RUNNING")
     done    = sum(1 for t in tasks if t.get("status") == "COMPLETED")
@@ -474,7 +487,7 @@ while True:
     reports_done = process_new_reports(reports_done)
 
     progress = {
-        "status":             "complete" if not nf_running else "running",
+        "status":             "complete" if pipeline_done else "running",
         "started_at":         started_at,
         "elapsed_seconds":    time.time() - started_at,
         "tasks_total":        total,
@@ -488,7 +501,7 @@ while True:
 
     s3.put_object(Bucket=bucket, Key=prog_key, Body=json.dumps(progress))
 
-    if not nf_running:
+    if pipeline_done:
         break
 
 MONEOF
@@ -496,9 +509,19 @@ MONEOF
 python3 /tmp/nf-head/monitor.py ${NF_PID} &
 MONITOR_PID=$!
 
-# Wait for Nextflow to finish
-wait ${NF_PID}
-NF_EXIT=$?
+# Wait for the pipeline exit file (written by run_pipeline.sh wrapper).
+# Falls back to waiting on PID if the tmux child is directly trackable.
+echo "Waiting for pipeline to complete..."
+while [ ! -f /tmp/nf-head/pipeline.exit ]; do
+    # Also check if the process is still alive
+    if [ "${NF_PID}" != "0" ] && ! kill -0 "${NF_PID}" 2>/dev/null; then
+        sleep 10  # give it a moment to write the exit file
+        break
+    fi
+    sleep 15
+done
+NF_EXIT=$(grep -o '[0-9]*$' /tmp/nf-head/pipeline.exit 2>/dev/null || echo "0")
+echo "Pipeline exit code: ${NF_EXIT}"
 
 # Give monitor one final cycle then stop it
 sleep 20
