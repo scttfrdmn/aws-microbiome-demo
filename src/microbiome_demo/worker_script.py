@@ -176,7 +176,7 @@ fi
 # ── Install nf-spawn plugin from pre-built release ZIP ───────────────────────
 # Releases publish a pre-built ZIP with the correct classes/ structure.
 # No build step needed — just download and unzip.
-TARGET_NF_SPAWN_VERSION="0.2.9"
+TARGET_NF_SPAWN_VERSION="0.2.10"
 NF_PLUGIN_DIR="/opt/nextflow_cache/plugins"
 NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
 if [ ! -d "${NF_SPAWN_PLUGIN_DIR}/classes" ]; then
