@@ -12,16 +12,17 @@ The config is rendered at runtime so we can inject:
 from __future__ import annotations
 
 # nf-core/taxprofiler process labels → instance types.
-# Sized for the actual workload:
-#   process_low:    fastp, FastQC, MultiQC — light CPU, minimal RAM
-#   process_medium: MetaPhlAn 4 — moderate RAM (marker database ~3 GB)
+# All steps run native on Graviton (arm64) via aarchbio containers — no QEMU.
+# In taxprofiler 2.0.0 the actual label→tool mapping is:
+#   process_single: MultiQC, krakentools, KRAKEN2STANDARDREPORT (+ our FETCH_FASTQ)
+#   process_medium: fastp, FastQC, MetaPhlAn 4 — moderate RAM
 #   process_high:   Kraken2 — needs 32 GB RAM to hold k2_pluspf in memory
-#   process_single: fasterq-dump — I/O bound, single-core, cheap instance
+#   process_low:    unused by any taxprofiler step (fallback only)
 _LABEL_INSTANCE_TYPES: dict[str, str] = {
-    "process_single": "t4g.medium",  # fasterq-dump, SRA conversion
-    "process_low": "t4g.large",  # fastp, FastQC, MultiQC
-    "process_medium": "c7g.2xlarge",  # MetaPhlAn 4
-    "process_high": "c7g.4xlarge",  # Kraken2 (needs 32 GB RAM)
+    "process_single": "c7g.large",    # ARM64: FETCH_FASTQ, MultiQC, krakentools, std-report
+    "process_low": "c7g.large",       # ARM64 fallback (aarchbio); unused by any taxprofiler step
+    "process_medium": "c7g.2xlarge",  # ARM64: fastp, FastQC, MetaPhlAn (aarchbio native arm64)
+    "process_high": "r7g.2xlarge",    # ARM64: Kraken2 — aarchbio mull + DB on arm64 AMI
 }
 
 # All instance types in use — passed to truffle.derive_queue_size().
@@ -32,7 +33,7 @@ _TEMPLATE = """\
 // DO NOT EDIT: regenerated on each run with live quota data
 
 plugins {{
-    id 'nf-spawn@0.2.6'
+    id 'nf-spawn@0.2.8'
     id 'nf-amazon@2.8.0'   // required for s3:// workDir support
 }}
 
@@ -50,30 +51,31 @@ process {{
         ext.instanceType = '{inst_single}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
-        ext.ami          = '{ami_id}'
-        // fasterq-dump needs: SRA file (~14GB) + temp files (~3x SRA) + FASTQ output
-        // 80GB gives comfortable headroom; task instances don't need the databases
-        ext.volumeSize   = 80
+        ext.ami          = '{ami_id_arm64}'  // ARM64: FETCH_FASTQ + MultiQC/krakentools/std-report
+        // fasterq-dump needs SRA file + ~6-7x SRA in scratch temp + FASTQ output.
+        // HMP accessions run up to ~52GB SRA → ~360GB temp; 400GB avoids the
+        // 'disk-limit exceeded' (exit 3) that 80GB hit on the larger samples.
+        ext.volumeSize   = 400
     }}
     withLabel: 'process_low' {{
         ext.instanceType = '{inst_low}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
-        ext.ami          = '{ami_id}'
+        ext.ami          = '{ami_id_arm64}'  // ARM64 fallback
         ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_medium' {{
         ext.instanceType = '{inst_medium}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
-        ext.ami          = '{ami_id}'
+        ext.ami          = '{ami_id_arm64}'  // ARM64: fastp/FastQC/MetaPhlAn on aarchbio
         ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_high' {{
         ext.instanceType = '{inst_high}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
-        ext.ami          = '{ami_id}'
+        ext.ami          = '{ami_id_arm64}'  // ARM64: Kraken2 DB staged on arm64 AMI
         ext.volumeSize   = {volume_size}
     }}
 
@@ -81,7 +83,7 @@ process {{
     ext.instanceType = '{inst_low}'
     ext.region       = '{region}'
     ext.ttl          = '2h'
-    ext.ami          = '{ami_id}'
+    ext.ami          = '{ami_id_arm64}'  // ARM64
     ext.volumeSize   = {volume_size}
 
     // Environment variables inherited by all nf-spawn task submissions.
@@ -129,6 +131,26 @@ process {{
     }}
 }}
 
+// ── Native arm64 container overrides (quay.io/aarchbio) ──────────────────────
+// taxprofiler 2.0.0 pins these to amd64-only Wave / biocontainers images, which
+// emulate or fail with `exec format error` on Graviton. A docker.registry
+// override does NOT catch Wave refs (they carry a full host), so each is
+// overridden per-process. Regex selectors because taxprofiler aliases modules
+// (FASTP_SINGLE/PAIRED, FASTQC_PROCESSED, *COMBINEKREPORTS*). Tags mirror
+// biocontainers <version>--<build>; verified present on aarchbio 2026-06,
+// Kraken2 mull (kraken2 2.1.5 + pigz 2.8 + coreutils 9.4) runtime-verified.
+process {{
+    withName: '.*FASTP.*'             {{ container = 'quay.io/aarchbio/fastp:0.24.0--h7dc49d2_1' }}
+    withName: '.*FASTQC.*'            {{ container = 'quay.io/aarchbio/fastqc:0.12.1--hdfd78af_0' }}
+    withName: 'METAPHLAN_METAPHLAN'   {{ container = 'quay.io/aarchbio/metaphlan:4.1.1--pyhdfd78af_0' }}
+    withName: 'KRAKEN2_KRAKEN2'       {{ container = 'quay.io/aarchbio/kraken2:2.1.5--pl5321h1e84f2d_0' }}
+    withName: 'MULTIQC'               {{ container = 'quay.io/aarchbio/multiqc:1.32--pyhdfd78af_2' }}
+    withName: '.*COMBINEKREPORTS.*'   {{ container = 'quay.io/aarchbio/krakentools:1.2--pyh7e72e81_0' }}
+    // KRAKEN2STANDARDREPORT pins nf-core/ubuntu:20.04 which is amd64-only;
+    // stock ubuntu:20.04 is multi-arch and the step is a trivial `cut`.
+    withName: 'KRAKEN2STANDARDREPORT' {{ container = 'ubuntu:20.04' }}
+}}
+
 // Trace file written to S3 — the dashboard polls this for live progress.
 trace {{
     enabled   = true
@@ -163,6 +185,7 @@ def render(cfg, queue_size: int) -> str:
         bucket=cfg.BUCKET,
         job_name=cfg.JOB_NAME,
         ami_id=cfg.AMI_ID,
+        ami_id_arm64=getattr(cfg, "AMI_ID_ARM64", cfg.AMI_ID),
         queue_size=queue_size,
         volume_size=getattr(cfg, "VOLUME_SIZE", 40),
         inst_single=_LABEL_INSTANCE_TYPES["process_single"],
