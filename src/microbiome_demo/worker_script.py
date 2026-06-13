@@ -76,25 +76,60 @@ process FETCH_FASTQ {
     \"\"\"
     set -euxo pipefail
 
-    # Download SRA from RODA then convert to FASTQ.
+    # ── Environment provenance ───────────────────────────────────────────────
+    # Captured once so every timing below is interpretable: a given throughput
+    # is only meaningful qualified by instance type / network / placement. All
+    # probes are best-effort (|| fallback) so they never fail the sample.
+    TOK=\\$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 120" 2>/dev/null || true)
+    imds() { curl -sf -H "X-aws-ec2-metadata-token: \\${TOK}" "http://169.254.169.254/latest/meta-data/\\$1" 2>/dev/null; }
+    INSTANCE_TYPE=\\$(imds instance-type || echo unknown)
+    INSTANCE_ID=\\$(imds instance-id || echo unknown)
+    AZ=\\$(imds placement/availability-zone || echo unknown)
+    LIFECYCLE=\\$(imds instance-life-cycle || echo unknown)
+    VCPUS=\\$(nproc 2>/dev/null || echo 0)
+    IFACE=\\$(ls /sys/class/net 2>/dev/null | grep -vx lo | head -1 || echo eth0)
+    NET_DRIVER=\\$(ethtool -i "\\$IFACE" 2>/dev/null | sed -n 's/^driver: //p' || echo unknown)
+    UNAME_ARCH=\\$(uname -m 2>/dev/null || echo unknown)
+
+    # ── Phase 1: pull source data from RODA (the staging cost) ───────────────
     # RODA is in us-east-1 — same region as these instances, no egress charge.
     # RODA stores files without .sra extension: sra/SRRxxxxxx/SRRxxxxxx
+    T0=\\$(date +%s.%N)
     aws s3 cp s3://sra-pub-run-odp/sra/${srr}/${srr} ./${srr}.sra \\
         --no-sign-request --region us-east-1 --no-progress
+    T1=\\$(date +%s.%N)
+    SRA_BYTES=\\$(stat -c%s ./${srr}.sra 2>/dev/null || echo 0)
 
-    # Invoke Docker explicitly — fasterq-dump runs inside ncbi/sra-tools
-    # while aws s3 cp above uses the host aws CLI.
+    # ── Phase 2: SRA → FASTQ (fasterq-dump in ncbi/sra-tools) ────────────────
     docker run --rm \
         -v \\${PWD}:/work -w /work \
         ncbi/sra-tools:latest \
         fasterq-dump --threads 2 --split-files --outdir /work ./${srr}.sra
-    # Compress FASTQs — taxprofiler requires real gzip content, not renamed files.
+    T2=\\$(date +%s.%N)
+    FASTQ_RAW_BYTES=\\$(du -cb ./*.fastq 2>/dev/null | tail -1 | cut -f1 || echo 0)
+
+    # ── Phase 3: compress (pigz) ─────────────────────────────────────────────
     # pigz uses all available cores; on c7g.large (~2 vCPU) this takes ~3-5 min.
     for f in ./*.fastq; do
         [ -f "\\$f" ] || continue
         pigz -p 2 "\\$f"
     done
+    T3=\\$(date +%s.%N)
+    FASTQ_GZ_BYTES=\\$(du -cb ./*.fastq.gz 2>/dev/null | tail -1 | cut -f1 || echo 0)
     rm -f ./${srr}.sra
+
+    # ── Emit per-sample data-movement timings (published to results/staging/) ─
+    # Durations + derived throughput via awk (no field refs, so the Nextflow
+    # GString leaves the awk programs untouched).
+    DL_S=\\$(awk -v a=\\$T0 -v b=\\$T1 'BEGIN{printf "%.3f", b-a}')
+    FQ_S=\\$(awk -v a=\\$T1 -v b=\\$T2 'BEGIN{printf "%.3f", b-a}')
+    GZ_S=\\$(awk -v a=\\$T2 -v b=\\$T3 'BEGIN{printf "%.3f", b-a}')
+    DL_MBPS=\\$(awk -v by=\\$SRA_BYTES -v s=\\$DL_S 'BEGIN{ if(s>0) printf "%.2f",(by/1048576)/s; else printf "0" }')
+    cat > ${sample_id}.timings.json <<TIMINGS_EOF
+{"sample_id":"${sample_id}","srr":"${srr}","body_site":"${body_site}","instance_type":"\\${INSTANCE_TYPE}","instance_id":"\\${INSTANCE_ID}","az":"\\${AZ}","lifecycle":"\\${LIFECYCLE}","vcpus":\\${VCPUS},"net_driver":"\\${NET_DRIVER}","arch":"\\${UNAME_ARCH}","roda_download_s":\\${DL_S},"roda_bytes":\\${SRA_BYTES},"roda_mbps":\\${DL_MBPS},"fasterq_dump_s":\\${FQ_S},"fastq_raw_bytes":\\${FASTQ_RAW_BYTES},"pigz_s":\\${GZ_S},"fastq_gz_bytes":\\${FASTQ_GZ_BYTES}}
+TIMINGS_EOF
+    aws s3 cp ${sample_id}.timings.json ${params.outdir}staging/${sample_id}.timings.json \\
+        --region us-east-1 --no-progress || true
 
     # Rename to stable sample_id prefix (handle both paired and single-end)
     if [ -f ${srr}_1.fastq.gz ]; then
@@ -176,7 +211,7 @@ fi
 # ── Install nf-spawn plugin from pre-built release ZIP ───────────────────────
 # Releases publish a pre-built ZIP with the correct classes/ structure.
 # No build step needed — just download and unzip.
-TARGET_NF_SPAWN_VERSION="0.2.10"
+TARGET_NF_SPAWN_VERSION="0.2.11"
 NF_PLUGIN_DIR="/opt/nextflow_cache/plugins"
 NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
 if [ ! -d "${NF_SPAWN_PLUGIN_DIR}/classes" ]; then
