@@ -87,7 +87,10 @@ process FETCH_FASTQ {
     AZ=\\$(imds placement/availability-zone || echo unknown)
     LIFECYCLE=\\$(imds instance-life-cycle || echo unknown)
     VCPUS=\\$(nproc 2>/dev/null || echo 0)
-    IFACE=\\$(ls /sys/class/net 2>/dev/null | grep -vx lo | head -1 || echo eth0)
+    # Pick the HOST NIC (the one with the default route), not docker0/br-*/veth —
+    # otherwise net_driver reports the Docker bridge instead of the real ENA.
+    IFACE=\\$(ip route show default 2>/dev/null | awk '/default/ {print \\$5; exit}')
+    [ -n "\\$IFACE" ] || IFACE=\\$(ls /sys/class/net 2>/dev/null | grep -E '^(en|eth)' | head -1 || echo eth0)
     NET_DRIVER=\\$(ethtool -i "\\$IFACE" 2>/dev/null | sed -n 's/^driver: //p' || echo unknown)
     UNAME_ARCH=\\$(uname -m 2>/dev/null || echo unknown)
 
