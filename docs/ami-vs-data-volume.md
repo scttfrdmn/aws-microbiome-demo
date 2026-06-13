@@ -102,3 +102,51 @@ and is acceptable given this is a repeated 100-way fan-out with a stable DB.
 Interim fallback that needs no upstream change: a stock AMI where Kraken2's task
 script fetches the DB from S3 itself (the same self-fetch pattern FETCH_FASTQ
 already uses for RODA) — at the cost of the ~12 GB pull on cold Kraken2 tasks.
+
+## Building & serving the DB volume efficiently (EBS direct APIs + FSR)
+
+Two AWS capabilities make the "DB on its own EBS volume" path materially better
+than a naive snapshot, and split cleanly across the build side and the read side.
+
+### Build side — create the snapshot WITHOUT a bake instance (EBS direct APIs)
+
+The [EBS direct APIs](https://docs.aws.amazon.com/ebs/latest/APIReference/Welcome.html)
+let you create and populate a snapshot directly, no EC2 instance and no attached
+volume:
+
+- `StartSnapshot` → `PutSnapshotBlock` (×N) → `CompleteSnapshot` — write the DB
+  straight into a snapshot from a laptop or a Lambda.
+- `ListChangedBlocks` / `ListSnapshotBlocks` / `GetSnapshotBlock` — read and diff
+  snapshot blocks.
+
+Impact: building the Kraken2 DB snapshot no longer needs the `build_ami.py`
+launch→download→extract→`spawn ami create`→terminate dance. And it's
+**incremental** — a DB version bump writes only changed blocks (`ListChangedBlocks`),
+not a fresh 16 GB. This removes the bake instance from the *data* side entirely.
+
+### Read side — Fast Snapshot Restore so wide fan-out isn't slow
+
+A volume created from a snapshot **lazy-loads blocks from S3 on first access**, so
+the first Kraken2 read of the DB on each fresh task pays that latency — and for a
+100-way fan-out, 100 volumes-from-the-same-snapshot all do. **Fast Snapshot
+Restore (FSR)** pre-warms the snapshot so every volume created from it is
+immediately at full performance. FSR is the ingredient that makes the data-volume
+path actually match the baked-AMI cold-start speed for wide fan-out (it has a
+per-AZ hourly cost while enabled — worth it during a run, disable after).
+
+### Why this is also a general spawn primitive
+
+This isn't Kraken2-specific. "Materialize reference data into an EBS snapshot via
+the direct APIs, then attach (FSR-warmed) volumes from it to launched instances"
+is a clean, reusable way to get any large reference (BLAST/bowtie2/MetaPhlAn DBs,
+ML model weights, …) onto ephemeral spores without baking AMIs or running a bake
+instance. Proposed as a spawn feature (see issues below); it complements the
+nf-spawn `ext.volumes` ask (#45) — direct APIs make the *build* instance-free, FSR
+fixes the *read* path, and `ext.volumes` is still how a Nextflow process requests
+the attach.
+
+### Tracking
+
+- **nf-spawn#45** — `ext.volumes` / snapshot-mount per process (the read/attach side).
+- **spawn#147** — build-snapshot-from-S3 (EBS direct APIs) + attach FSR-warmed
+  volume-from-snapshot (the general primitive).
