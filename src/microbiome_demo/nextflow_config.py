@@ -33,7 +33,7 @@ _TEMPLATE = """\
 // DO NOT EDIT: regenerated on each run with live quota data
 
 plugins {{
-    id 'nf-spawn@0.2.10'
+    id 'nf-spawn@0.2.11'
     id 'nf-amazon@2.8.0'   // required for s3:// workDir support
 }}
 
