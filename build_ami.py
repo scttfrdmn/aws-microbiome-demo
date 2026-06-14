@@ -146,7 +146,7 @@ spawn version
 
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
 # Download the pre-built release ZIP — no Gradle build needed.
-NF_SPAWN_VERSION="0.2.12"
+NF_SPAWN_VERSION="0.3.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
 dnf install -y unzip
 PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
