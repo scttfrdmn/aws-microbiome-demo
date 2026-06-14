@@ -119,8 +119,16 @@ def main() -> None:
 
     # 3. Upload configs
     emit({"type": "phase", "label": "Uploading SRR list and Nextflow config…"})
-    sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
-    accessions = HMP_ACCESSIONS[:sample_count]
+    # SRR_ACCESSIONS env override (comma-separated SRRs) — for cheap smoke tests
+    # that pick small accessions instead of HMP_ACCESSIONS[:n]'s large head.
+    # Body site defaults to 'stool' (unused by the staging/QC path being tested).
+    srr_override = os.environ.get("SRR_ACCESSIONS")
+    if srr_override:
+        accessions = [(s.strip(), "stool") for s in srr_override.split(",") if s.strip()]
+        sample_count = len(accessions)
+    else:
+        sample_count = min(cfg.SAMPLE_COUNT, len(HMP_ACCESSIONS))
+        accessions = HMP_ACCESSIONS[:sample_count]
     srr_key     = worker_script.write_srr_slice(cfg, accessions)
     nf_cfg_str  = nextflow_config.render(cfg, queue_size)
     nf_cfg_key  = worker_script.upload_nextflow_config(cfg, nf_cfg_str)
