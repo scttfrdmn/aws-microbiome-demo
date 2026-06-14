@@ -7,21 +7,20 @@ Run this ONCE before the talk.  It takes ~30-45 minutes.  The resulting AMI
 eliminates all software download/install time on demo day -- the instances
 boot ready to run Nextflow immediately.
 
-What the AMI contains:
+What the AMI contains (a lean TOOLS image — no reference databases):
   - Amazon Linux 2023 (ARM64 / Graviton3)
   - Nextflow 24.x  (the workflow engine)
+  - Docker + pigz + AWS CLI  (nf-spawn runs tasks via `docker run` on the host)
   - nf-core/taxprofiler (pulled at pipeline runtime via Docker)
-  - Kraken2 k2_pluspf_16_GB database  (11.9 GB, pre-staged on EBS)
-  - MetaPhlAn 4 (runs in nf-core/taxprofiler Docker container, no host install)
-  - SRA Toolkit  (converts .sra → FASTQ on-the-fly)
   - spored agent  (Spawn's termination daemon, auto-installed by spawn launch)
 
-Why a 16 GB Kraken2 database instead of the full standard (75 GB)?
-  k2_pluspf includes bacteria, archaea, viruses, fungi, AND protozoa --
-  everything relevant for human microbiome profiling.  The full standard
-  database adds plant genomes and other irrelevant taxa.  16 GB fits in
-  the 32 GB RAM of a c7g.4xlarge, allowing in-memory classification
-  which is the bottleneck for Kraken2 throughput.
+Reference databases are NOT baked in — they ride on attached EBS volumes:
+  - Kraken2 k2_pluspf_16GB → EBS snapshot, mounted on the Kraken2 task via
+    nf-spawn ext.volumes (config.KRAKEN2_DB_SNAPSHOT). Build it instance-free
+    with `spawn snapshot create --from s3://.../k2_pluspf_16_GB_*.tar.gz`.
+  - MetaPhlAn 4 marker DB → its own EBS volume (see config), same mechanism.
+  This keeps the AMI small, lets task root volumes stay small, and makes a DB
+  update a re-snapshot instead of a full AMI rebake. See docs/ami-vs-data-volume.md.
 
 Re-running safely:
   If AMI_ID in config.py is already set, this script prints the existing
@@ -107,19 +106,15 @@ python3 -m pip install --quiet boto3
 # Pre-pulling would require `docker login` which we avoid on bake instances.
 echo "Docker ready — nfcore/taxprofiler will be pulled at pipeline runtime"
 
-# --- Kraken2 k2_pluspf_16_GB database ---------------------------------------
-# 11.9 GB compressed → ~16 GB uncompressed.  Stored in /opt/databases so
-# the Nextflow pipeline can reference it without S3 download.
-mkdir -p /opt/databases/kraken2
-cd /opt/databases/kraken2
-aws s3 cp \\
-    s3://genome-idx/kraken/k2_pluspf_16_GB_20260226.tar.gz \\
-    . \\
-    --no-sign-request \\
-    --no-progress
-echo "Extracting Kraken2 database..."
-tar -xzf k2_pluspf_16_GB_20260226.tar.gz
-rm k2_pluspf_16_GB_20260226.tar.gz
+# --- Kraken2 database: NOT baked into the AMI anymore ------------------------
+# The k2_pluspf_16GB DB now lives in a pre-built EBS snapshot, attached read-only
+# to the Kraken2 task at /opt/databases/kraken2 via nf-spawn ext.volumes
+# (config.KRAKEN2_DB_SNAPSHOT). Building it: `spawn snapshot create --from
+# s3://genome-idx/kraken/k2_pluspf_16_GB_*.tar.gz --size 24` (spawn ≥0.49, EBS
+# direct APIs — instance-free). This keeps the AMI a lean tools image: the DB is
+# a re-snapshottable volume, root volumes stay small, and a DB update is a
+# re-snapshot rather than a full AMI rebake. See docs/ami-vs-data-volume.md.
+mkdir -p /opt/databases/kraken2  # mount point for the attached DB volume
 
 # Note: MetaPhlAn 4 runs inside the nf-core/taxprofiler Docker container.
 # No host install needed — Docker pulls the container at pipeline runtime.
@@ -146,7 +141,7 @@ spawn version
 
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
 # Download the pre-built release ZIP — no Gradle build needed.
-NF_SPAWN_VERSION="0.3.0"
+NF_SPAWN_VERSION="0.4.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
 dnf install -y unzip
 PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
@@ -221,10 +216,10 @@ def bake_ami(cfg) -> str:
         print(f"  Bucket exists: s3://{cfg.BUCKET}")
 
     # arm64 bake instance so the AMI (and its baked spawn CLI) target Graviton.
-    # The Kraken2 DB is arch-neutral data; aarchbio supplies native arm64
-    # containers for every taxprofiler step, so the whole pipeline runs native.
-    # spawn auto-detects the latest AL2023 arm64 AMI for an arm64 instance type.
-    bake_instance_type = "c7g.4xlarge"
+    # No longer downloading the 16 GB Kraken2 DB (it's on an EBS volume now), so
+    # the bake is light — a small instance is plenty for dnf installs + nextflow
+    # pull. spawn auto-detects the latest AL2023 arm64 AMI for an arm64 type.
+    bake_instance_type = "c7g.xlarge"
 
     print("Launching bake instance via spawn...")
     print(f"  Instance type: {bake_instance_type}")
@@ -253,7 +248,7 @@ def bake_ami(cfg) -> str:
             "--region",
             cfg.REGION,
             "--volume-size",
-            "40",
+            "20",  # lean tools AMI — no 16 GB DB baked in (DB rides an EBS volume)
             "--user-data-file",
             bake_script_path,
             "--ttl",
@@ -314,13 +309,13 @@ def bake_ami(cfg) -> str:
         print("  Bake timed out after 180 minutes")
         sys.exit(1)
 
-    ami_name = "nf-spawn-arm64-v0.2.8-spawn-latest-kraken2db"
+    ami_name = "nf-spawn-arm64-tools-v0.3.0"
     print(f"\n  Creating AMI '{ami_name}' via spawn ami create...")
     result = subprocess.run(
         [
             "spawn", "ami", "create", "microbiome-bake",
             "--name", ami_name,
-            "--description", "Microbiome demo ARM64/Graviton: Nextflow + nf-spawn + Kraken2 k2_pluspf_16GB",
+            "--description", "Microbiome demo ARM64/Graviton tools AMI: Nextflow + nf-spawn 0.3.0 + Docker (DBs on EBS volumes, not baked)",
             "--wait",
             "-o", "json",
         ],
