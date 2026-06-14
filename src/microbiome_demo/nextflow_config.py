@@ -206,6 +206,12 @@ def render(cfg, queue_size: int) -> str:
     # plus the volume. Empty when METAPHLAN_DB_SNAPSHOT is unset.
     mpa_snapshot = getattr(cfg, "METAPHLAN_DB_SNAPSHOT", "")
     mpa_mount = getattr(cfg, "METAPHLAN_DB_MOUNT", "/opt/databases/metaphlan")
+    # MetaPhlAn's ROOT volume needs more than the 40 GB default: the aarchbio
+    # metaphlan image is a large conda stack (libicu etc.), and the root also
+    # holds the OS + Docker + staged FASTQs. 40 GB filled up extracting the image
+    # ("no space left on device", exit 125). The DB rides its own RO volume, so
+    # this is purely root headroom. 100 GB is comfortable. (Override: METAPHLAN_ROOT_GB.)
+    mpa_root_gb = getattr(cfg, "METAPHLAN_ROOT_GB", 100)
     metaphlan_volume_block = (
         f"""
     withName: 'METAPHLAN_METAPHLAN' {{
@@ -213,7 +219,7 @@ def render(cfg, queue_size: int) -> str:
         ext.region       = '{cfg.REGION}'
         ext.ttl          = '2h'
         ext.ami          = '{getattr(cfg, "AMI_ID_ARM64", cfg.AMI_ID)}'
-        ext.volumeSize   = {getattr(cfg, "VOLUME_SIZE", 40)}
+        ext.volumeSize   = {mpa_root_gb}
         ext.volumes = [[ snapshot: '{mpa_snapshot}', mount: '{mpa_mount}', readOnly: true ]]
     }}
 """
