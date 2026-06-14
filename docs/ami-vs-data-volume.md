@@ -124,6 +124,26 @@ launch→download→extract→`spawn ami create`→terminate dance. And it's
 **incremental** — a DB version bump writes only changed blocks (`ListChangedBlocks`),
 not a fresh 16 GB. This removes the bake instance from the *data* side entirely.
 
+`spawn snapshot create --from <dir|.tar.gz|raw>` (spawn ≥ 0.48.0) packs a
+directory/tarball into an ext4 image in-process (pure Go, no `mkfs`, no builder
+instance) and streams it into the snapshot. Example used here:
+```
+spawn snapshot create --from s3://genome-idx/kraken/k2_pluspf_16_GB_*.tar.gz \
+    --size 24 --name kraken2-k2pluspf-16gb --region us-east-1
+```
+
+**Where you run the build matters (observed).** Running this from a laptop is
+slow and RAM-heavy: spawn assembles the full ext4 image in memory before/while
+uploading (~5 GB+ RSS for a 16 GB image), and the data path is
+S3 → laptop → EBS over the home uplink. For a 16 GB DB it's tolerable
+(tens of minutes); for larger references it's impractical from a workstation.
+**Recommendation: build the snapshot from a small EC2 instance / Lambda in the
+target region**, so S3 → snapshot stays in-region (fast, no local-uplink
+bottleneck, ample RAM). A server-side / in-region build mode would be a good
+spawn enhancement (avoid round-tripping bytes through the caller). The build is a
+**one-time, amortized** cost regardless of where it runs, so this is about build
+convenience/latency, not per-run cost.
+
 ### Read side — Fast Snapshot Restore so wide fan-out isn't slow
 
 A volume created from a snapshot **lazy-loads blocks from S3 on first access**, so

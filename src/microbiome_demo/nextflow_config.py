@@ -33,7 +33,7 @@ _TEMPLATE = """\
 // DO NOT EDIT: regenerated on each run with live quota data
 
 plugins {{
-    id 'nf-spawn@0.2.12'
+    id 'nf-spawn@0.3.0'
     id 'nf-amazon@2.8.0'   // required for s3:// workDir support
 }}
 
@@ -75,8 +75,12 @@ process {{
         ext.instanceType = '{inst_high}'
         ext.region       = '{region}'
         ext.ttl          = '2h'
-        ext.ami          = '{ami_id_arm64}'  // ARM64: Kraken2 DB staged on arm64 AMI
+        ext.ami          = '{ami_id_arm64}'  // ARM64 tools AMI (Docker+Nextflow; DB on EBS volume)
         ext.volumeSize   = {volume_size}
+        // Kraken2 k2_pluspf DB mounted from a pre-built EBS snapshot (nf-spawn
+        // 0.3.0 ext.volumes → spawn --attach-volume), instead of baked into the
+        // AMI. Empty when KRAKEN2_DB_SNAPSHOT is unset (falls back to baked DB).
+        {db_volume_line}
     }}
 
     // Fallback for unlabelled processes.
@@ -102,11 +106,15 @@ executor {{
 }}
 
 params {{
-    // taxprofiler flags — applied to both the FETCH_FASTQ→TAXPROFILER workflow.
-    // The databases CSV (--databases) is passed on the command line.
-    // Kraken2 database path is pre-staged on the AMI at /opt/databases/kraken2.
-    perform_shortread_hostremoval    = false
+    // taxprofiler flags. In taxprofiler 2.0.0 EVERY run_*/perform_* gate defaults
+    // to FALSE, so the steps below MUST be enabled explicitly — otherwise only
+    // FASTQC (raw) + MultiQC run and classification silently never dispatches
+    // (the databases CSV is ignored when run_kraken2 is false).
+    perform_shortread_qc             = true   // enable fastp preprocessing
     shortread_qc_tool                = 'fastp'
+    perform_shortread_hostremoval    = false
+    run_kraken2                      = true   // Kraken2 classification (DB from --databases)
+    run_metaphlan                    = true   // MetaPhlAn marker-gene profiling
     save_preprocessed_reads          = false
     save_analysis_results            = true
 }}
@@ -180,6 +188,16 @@ def render(cfg, queue_size: int) -> str:
         cfg:        config module (REGION, BUCKET, JOB_NAME, AMI_ID, VOLUME_SIZE).
         queue_size: derived from truffle.derive_queue_size().
     """
+    # Kraken2 DB delivery: if a pre-built EBS snapshot is configured, mount it
+    # read-only on the Kraken2 task via nf-spawn's ext.volumes (the DB lives in a
+    # re-snapshottable volume, not baked into the AMI). Otherwise leave the line
+    # blank → the DB is expected on the AMI at the mount path (legacy bake path).
+    db_snapshot = getattr(cfg, "KRAKEN2_DB_SNAPSHOT", "")
+    db_mount = getattr(cfg, "KRAKEN2_DB_MOUNT", "/opt/databases/kraken2")
+    db_volume_line = (
+        f"ext.volumes = [[ snapshot: '{db_snapshot}', mount: '{db_mount}', readOnly: true ]]"
+        if db_snapshot else ""
+    )
     return _TEMPLATE.format(
         region=cfg.REGION,
         bucket=cfg.BUCKET,
@@ -188,6 +206,7 @@ def render(cfg, queue_size: int) -> str:
         ami_id_arm64=getattr(cfg, "AMI_ID_ARM64", cfg.AMI_ID),
         queue_size=queue_size,
         volume_size=getattr(cfg, "VOLUME_SIZE", 40),
+        db_volume_line=db_volume_line,
         inst_single=_LABEL_INSTANCE_TYPES["process_single"],
         inst_low=_LABEL_INSTANCE_TYPES["process_low"],
         inst_medium=_LABEL_INSTANCE_TYPES["process_medium"],
