@@ -259,8 +259,9 @@ fi
 # ── Prerequisites check ──────────────────────────────────────────────────────
 command -v nextflow || { echo "ERROR: nextflow not found at /usr/local/bin/nextflow"; exit 1; }
 command -v spawn    || { echo "ERROR: spawn not found on PATH"; exit 1; }
-test -f /opt/databases/kraken2/hash.k2d \
-    || { echo "ERROR: Kraken2 database missing — was the AMI baked?"; exit 1; }
+# NOTE: no Kraken2 DB check here. The DB is no longer baked into the AMI — it's
+# attached to the Kraken2 TASK instance from an EBS snapshot (nf-spawn
+# ext.volumes), not present on this head node. The head only orchestrates.
 
 # ── Download config and SRR list ─────────────────────────────────────────────
 mkdir -p /tmp/nf-head
@@ -311,12 +312,16 @@ print(f"Samplesheet: {len(rows)} samples → {out}")
 PYEOF
 
 # ── Build databases CSV ──────────────────────────────────────────────────────
-# nf-core/taxprofiler v2+ requires a databases CSV instead of --kraken2_db flags.
-# Only include Kraken2 — MetaPhlAn runs inside the container and fetches its
-# own database via the pipeline if needed (or skip it to save time).
+# nf-core/taxprofiler v2+ requires a databases CSV. Each db_path is the MOUNT
+# point of a per-task EBS volume (nf-spawn ext.volumes), not a baked-AMI path:
+#   kraken2  → /opt/databases/kraken2   (k2_pluspf_16GB, on process_high)
+#   metaphlan→ /opt/databases/metaphlan (vJan25 marker DB, on METAPHLAN_METAPHLAN)
+# taxprofiler's metaphlan module locates the bowtie2 index by globbing db_path
+# for *rev.1.bt2*, so db_path just needs to be the mounted DB dir.
 cat > /tmp/nf-head/databases.csv << 'DBEOF'
 tool,db_name,db_params,db_path
 kraken2,k2_pluspf_16gb,,/opt/databases/kraken2
+metaphlan,mpa_vJan25,,/opt/databases/metaphlan
 DBEOF
 echo "Databases CSV: $(cat /tmp/nf-head/databases.csv | wc -l) entries"
 
