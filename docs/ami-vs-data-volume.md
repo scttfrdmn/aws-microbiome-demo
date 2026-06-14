@@ -165,8 +165,33 @@ nf-spawn `ext.volumes` ask (#45) — direct APIs make the *build* instance-free,
 fixes the *read* path, and `ext.volumes` is still how a Nextflow process requests
 the attach.
 
+## Tagging reference-DB snapshots
+
+These DB snapshots live in the account long-term and get attached to many
+launches — so they need provenance tags, or they become mystery 24/40 GB blobs.
+`spawn snapshot create` applies a baseline (`Name`, `spawn:snapshot-name`,
+`spawn:managed`, `spawn:source=ebs-direct`) but has no `--tag` flag yet
+(spawn#161). Until it does, `scripts/tag_db_snapshot.sh` applies a consistent
+schema after each build:
+
+| tag | meaning |
+|-----|---------|
+| `project` | `aws-microbiome-demo` |
+| `role` | `reference-db` |
+| `tool` | `kraken2` / `metaphlan` / … |
+| `db` | short DB name (`k2_pluspf_16GB`) |
+| `db-version` | exact version (`k2_pluspf_16_GB_20260226`, `vJan25_CHOCOPhlAnSGB_202503`) |
+| `source` | where it came from (S3 URI, or `metaphlan --install`) |
+| `mount` | where the task mounts it (`/opt/databases/kraken2`) |
+| `built-by` / `built-date` | `spawn-snapshot-create` + date |
+
+Run it as: `scripts/tag_db_snapshot.sh <snap-id> <tool> <db> <db-version> <source> <mount>`.
+
 ### Tracking
 
 - **nf-spawn#45** — `ext.volumes` / snapshot-mount per process (the read/attach side).
+- **nf-spawn#47** — per-task setup hook (so stock AL2023 works without a tools AMI).
 - **spawn#147** — build-snapshot-from-S3 (EBS direct APIs) + attach FSR-warmed
   volume-from-snapshot (the general primitive).
+- **spawn#157** — `snapshot create` streams (bounded memory) instead of buffering.
+- **spawn#161** — `--tag k=v` on `snapshot create` / `launch` for provenance tags.
