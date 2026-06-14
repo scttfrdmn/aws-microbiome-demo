@@ -187,6 +187,32 @@ schema after each build:
 
 Run it as: `scripts/tag_db_snapshot.sh <snap-id> <tool> <db> <db-version> <source> <mount>`.
 
+## ⚠️ Outcome: `ext.volumes` does NOT fit taxprofiler's DB model (paused)
+
+The EBS-volume-for-DB migration was built end to end (snapshots, tags, config
+wiring, tools-AMI) but **fails validation against nf-core/taxprofiler**, and the
+reason is architectural, not a bug:
+
+- taxprofiler takes each `db_path` as a **staged Nextflow `path` input** — it
+  validates the path **exists on the head node** during pipeline init, then
+  stages it head→task work dir (`workflows/taxprofiler.nf` branches on
+  `db_path.name.endsWith('.tar.gz')`; profiling passes `path db` to
+  `KRAKEN2_KRAKEN2`/`METAPHLAN_METAPHLAN`).
+- `ext.volumes` **mounts** the DB on the *task* at a fixed path — nothing on the
+  head, and a competing delivery mechanism to Nextflow's staging.
+
+Result: `db_path '/opt/databases/metaphlan' does not exist` on the head →
+`SchemaValidationException` → whole pipeline aborts before any task runs. An
+earlier Kraken2 run *looked* fine only because the AMI still had the DB **baked**
+at the same path (false positive — the volume was never exercised).
+
+**Conclusion:** `ext.volumes` suits data a process reads directly from a known
+mount (e.g. a self-`docker run` step), **not** a pipeline's declared, staged
+`path` inputs. For taxprofiler DBs the fitting options are (a) bake into the AMI
+(works today; the original design), or (b) an `s3://` `db_path` that nf-spawn's
+#37 input-staging localizes per task (if taxprofiler accepts it; stages 16–34 GB
+per task). Raised as **nf-spawn#49**. Migration paused pending a supported pattern.
+
 ### Tracking
 
 - **nf-spawn#45** — `ext.volumes` / snapshot-mount per process (the read/attach side).
@@ -195,3 +221,4 @@ Run it as: `scripts/tag_db_snapshot.sh <snap-id> <tool> <db> <db-version> <sourc
   volume-from-snapshot (the general primitive).
 - **spawn#157** — `snapshot create` streams (bounded memory) instead of buffering.
 - **spawn#161** — `--tag k=v` on `snapshot create` / `launch` for provenance tags.
+- **nf-spawn#49** — `ext.volumes` vs staged `path` DB inputs incompatibility (this outcome).
