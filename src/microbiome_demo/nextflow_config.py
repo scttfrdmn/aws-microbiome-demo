@@ -82,7 +82,7 @@ process {{
         // AMI. Empty when KRAKEN2_DB_SNAPSHOT is unset (falls back to baked DB).
         {db_volume_line}
     }}
-
+{metaphlan_volume_block}
     // Fallback for unlabelled processes.
     ext.instanceType = '{inst_low}'
     ext.region       = '{region}'
@@ -198,6 +198,27 @@ def render(cfg, queue_size: int) -> str:
         f"ext.volumes = [[ snapshot: '{db_snapshot}', mount: '{db_mount}', readOnly: true ]]"
         if db_snapshot else ""
     )
+
+    # MetaPhlAn DB volume: scoped to the METAPHLAN_METAPHLAN process by NAME, not
+    # the process_medium label (which fastp/FastQC also use — they must not get
+    # the 40 GB volume). Nextflow does NOT merge a withName ext with the label
+    # ext, so this block repeats ALL ext.* fields (same sizing as process_medium)
+    # plus the volume. Empty when METAPHLAN_DB_SNAPSHOT is unset.
+    mpa_snapshot = getattr(cfg, "METAPHLAN_DB_SNAPSHOT", "")
+    mpa_mount = getattr(cfg, "METAPHLAN_DB_MOUNT", "/opt/databases/metaphlan")
+    metaphlan_volume_block = (
+        f"""
+    withName: 'METAPHLAN_METAPHLAN' {{
+        ext.instanceType = '{_LABEL_INSTANCE_TYPES["process_medium"]}'
+        ext.region       = '{cfg.REGION}'
+        ext.ttl          = '2h'
+        ext.ami          = '{getattr(cfg, "AMI_ID_ARM64", cfg.AMI_ID)}'
+        ext.volumeSize   = {getattr(cfg, "VOLUME_SIZE", 40)}
+        ext.volumes = [[ snapshot: '{mpa_snapshot}', mount: '{mpa_mount}', readOnly: true ]]
+    }}
+"""
+        if mpa_snapshot else ""
+    )
     return _TEMPLATE.format(
         region=cfg.REGION,
         bucket=cfg.BUCKET,
@@ -207,6 +228,7 @@ def render(cfg, queue_size: int) -> str:
         queue_size=queue_size,
         volume_size=getattr(cfg, "VOLUME_SIZE", 40),
         db_volume_line=db_volume_line,
+        metaphlan_volume_block=metaphlan_volume_block,
         inst_single=_LABEL_INSTANCE_TYPES["process_single"],
         inst_low=_LABEL_INSTANCE_TYPES["process_low"],
         inst_medium=_LABEL_INSTANCE_TYPES["process_medium"],
