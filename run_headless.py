@@ -98,7 +98,7 @@ def main() -> None:
     emit({"type": "phase", "label": "Querying vCPU quotas via truffle…"})
     families = list({t.split(".")[0] for t in nextflow_config.ALL_INSTANCE_TYPES})
     quotas = truffle.query_quotas(cfg.REGION, families)
-    queue_size = truffle.derive_queue_size(quotas, nextflow_config.ALL_INSTANCE_TYPES)
+    queue_size = truffle.derive_queue_size(quotas, nextflow_config.ALL_INSTANCE_TYPES, cfg.REGION)
     emit({"type": "quota", "queue_size": queue_size,
           "summary": truffle.quota_summary(quotas, queue_size)})
 
@@ -143,6 +143,22 @@ def main() -> None:
     })
     head_cfg.INSTANCE_TYPE = getattr(cfg, "HEAD_INSTANCE_TYPE", "t4g.small")
     head_cfg.INSTANCE_COUNT = 1
+
+    # Attach the same read-only DB snapshots to the head node at their mount
+    # paths, so taxprofiler's head-side db_path 'exists' validation passes (the
+    # tasks get the same volumes via nf-spawn ext.volumes). nf-spawn 0.5.0 recipe.
+    head_attach = []
+    for snap_attr, mount_attr, default_mount in (
+        ("KRAKEN2_DB_SNAPSHOT", "KRAKEN2_DB_MOUNT", "/opt/databases/kraken2"),
+        ("METAPHLAN_DB_SNAPSHOT", "METAPHLAN_DB_MOUNT", "/opt/databases/metaphlan"),
+    ):
+        snap = getattr(cfg, snap_attr, "")
+        if snap:
+            head_attach.append(f"{snap}:{getattr(cfg, mount_attr, default_mount)}:ro")
+    head_cfg.HEAD_ATTACH_VOLUMES = head_attach
+    if head_attach:
+        emit({"type": "phase",
+              "label": f"Head will mount {len(head_attach)} DB volume(s) for validation"})
 
     head_script = worker_script.render(cfg, nf_cfg_key, srr_key, main_nf_key)
     head_script_path = worker_script.write_temp(head_script)

@@ -114,7 +114,7 @@ echo "Docker ready — nfcore/taxprofiler will be pulled at pipeline runtime"
 # direct APIs — instance-free). This keeps the AMI a lean tools image: the DB is
 # a re-snapshottable volume, root volumes stay small, and a DB update is a
 # re-snapshot rather than a full AMI rebake. See docs/ami-vs-data-volume.md.
-mkdir -p /opt/databases/kraken2  # mount point for the attached DB volume
+mkdir -p /opt/databases/kraken2 /opt/databases/metaphlan  # mount points for attached DB volumes
 
 # Note: MetaPhlAn 4 runs inside the nf-core/taxprofiler Docker container.
 # No host install needed — Docker pulls the container at pipeline runtime.
@@ -141,7 +141,7 @@ spawn version
 
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
 # Download the pre-built release ZIP — no Gradle build needed.
-NF_SPAWN_VERSION="0.4.0"
+NF_SPAWN_VERSION="0.5.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
 dnf install -y unzip
 PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
