@@ -187,31 +187,48 @@ schema after each build:
 
 Run it as: `scripts/tag_db_snapshot.sh <snap-id> <tool> <db> <db-version> <source> <mount>`.
 
-## ⚠️ Outcome: `ext.volumes` does NOT fit taxprofiler's DB model (paused)
+## ✅ Outcome: volume-backed DBs work end-to-end, zero-copy, no pipeline fork
 
-The EBS-volume-for-DB migration was built end to end (snapshots, tags, config
-wiring, tools-AMI) but **fails validation against nf-core/taxprofiler**, and the
-reason is architectural, not a bug:
+After a sequence of upstream fixes, the demo's Kraken2 **and** MetaPhlAn reference
+DBs are read directly off read-only EBS volumes — no baked DB, no per-task
+download, unmodified nf-core/taxprofiler. Validated on **nf-spawn 0.6.0 + spawn
+0.51.1**: every task COMPLETED, both classifiers produced real output
+(Fusobacterium etc. on the stool samples), confirmed against the generated
+staging script (`ln -sfn /opt/databases/<db> → stage name`, no `aws s3 cp`).
 
-- taxprofiler takes each `db_path` as a **staged Nextflow `path` input** — it
-  validates the path **exists on the head node** during pipeline init, then
-  stages it head→task work dir (`workflows/taxprofiler.nf` branches on
-  `db_path.name.endsWith('.tar.gz')`; profiling passes `path db` to
-  `KRAKEN2_KRAKEN2`/`METAPHLAN_METAPHLAN`).
-- `ext.volumes` **mounts** the DB on the *task* at a fixed path — nothing on the
-  head, and a competing delivery mechanism to Nextflow's staging.
+### The recipe that works
+1. `spawn snapshot create --from s3://…/<db>.tar.gz --size N --name <db> --tag …`
+   (instance-free, bounded memory; build in-region for big DBs). Tag for provenance.
+2. Attach the **same read-only snapshot on the head AND every task** at the same
+   mount path. Head: nf-spawn's launcher passes `--attach-volume` (here via
+   `HEAD_ATTACH_VOLUMES` in `spawn.launch_workers`), so the head mounts it too and
+   taxprofiler's head-side `db_path` *exists* validation passes. Tasks: per-process
+   `ext.volumes`.
+3. `databases.csv` `db_path` = the mount path; the **mount basename must equal the
+   input stage name** (the `db_path` basename) so nf-spawn symlinks instead of copying.
 
-Result: `db_path '/opt/databases/metaphlan' does not exist` on the head →
-`SchemaValidationException` → whole pipeline aborts before any task runs. An
-earlier Kraken2 run *looked* fine only because the AMI still had the DB **baked**
-at the same path (false positive — the volume was never exercised).
+### What made it work (the upstream arc)
+The naive attempt failed for real reasons, each fixed upstream:
+- **spawn#166** — `--attach-volume` mounted *after* the user-data workload; now
+  mounts before, so head-side validation sees the DB.
+- **nf-spawn#49 → #51 (0.5.0) → #55/#56 (0.6.0)** — taxprofiler *stages* `db_path`,
+  so nf-spawn saw the Nextflow S3 stage copy as the input source, not the mount,
+  and fell back to `aws s3 cp` (per-task download — fine for the 16 GB Kraken2 DB,
+  failed on the 36 GB MetaPhlAn one). 0.6.0 matches the input's **stage-name
+  basename** to an attached `ext.volumes` mount and **symlinks** it (skip the copy)
+  regardless of source URI → genuine zero-copy.
 
-**Conclusion:** `ext.volumes` suits data a process reads directly from a known
-mount (e.g. a self-`docker run` step), **not** a pipeline's declared, staged
-`path` inputs. For taxprofiler DBs the fitting options are (a) bake into the AMI
-(works today; the original design), or (b) an `s3://` `db_path` that nf-spawn's
-#37 input-staging localizes per task (if taxprofiler accepts it; stages 16–34 GB
-per task). Raised as **nf-spawn#49**. Migration paused pending a supported pattern.
+### Demo-side sizing notes (not nf-spawn bugs)
+- MetaPhlAn needs a **memory-optimized task instance** (`r7g.4xlarge`, 128 GB) — bowtie2
+  against the full CHOCOPhlAnSGB index OOM-killed (exit 137) on 16 GB. The volume
+  removes the *copy*, not the resident-RAM footprint. (`METAPHLAN_INSTANCE` knob.)
+- MetaPhlAn root volume bumped to 100 GB (`METAPHLAN_ROOT_GB`) for the large conda
+  image — now less critical since there's no DB copy, but harmless headroom.
+
+### Still standing as the simpler fallback
+Baking the DB into the AMI still works and is the lowest-config option for a
+stable DB + wide fan-out; the EBS-volume path wins when DBs change independently
+of the image or you want small, right-sized root volumes and no rebakes.
 
 ### Tracking
 
@@ -221,4 +238,6 @@ per task). Raised as **nf-spawn#49**. Migration paused pending a supported patte
   volume-from-snapshot (the general primitive).
 - **spawn#157** — `snapshot create` streams (bounded memory) instead of buffering.
 - **spawn#161** — `--tag k=v` on `snapshot create` / `launch` for provenance tags.
-- **nf-spawn#49** — `ext.volumes` vs staged `path` DB inputs incompatibility (this outcome).
+- **nf-spawn#49 → #51 (0.5.0) → #55/#56 (0.6.0)** — symlink a staged `path` input to its
+  `ext.volumes` mount (by stage-name basename) instead of copying → zero-copy. RESOLVED.
+- **spawn#166** — `--attach-volume` mounts before the user-data workload (head-side validation). RESOLVED.
