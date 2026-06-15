@@ -46,9 +46,25 @@ PRICE_USD_PER_HR: dict[str, float] = {
     "c7i.large": 0.089250,
     "c7i.2xlarge": 0.357000,
     "r7i.2xlarge": 0.529200,
+    "r7i.4xlarge": 1.058400,
     "c7g.large": 0.072500,
     "c7g.2xlarge": 0.290000,
     "r7g.2xlarge": 0.428400,
+    "r7g.4xlarge": 0.856800,
+}
+
+# EBS pricing (us-east-1): gp3 volume storage, and snapshot storage.
+EBS_GP3_USD_PER_GB_MO = 0.08
+EBS_SNAPSHOT_USD_PER_GB_MO = 0.05
+HOURS_PER_MONTH = 730.0
+
+# Reference-DB EBS volumes (the volume-backed-DB architecture). Each is a
+# snapshot (standing storage) that every consuming task attaches as a gp3 volume
+# for the task's duration. Sizes = the `--size` the snapshots were built at.
+DB_VOLUMES: dict[str, dict] = {
+    # stage label that consumes it : {snapshot GiB, which stage attaches it}
+    "Kraken2":   {"gib": 24, "snapshot": "kraken2-k2pluspf-16gb"},
+    "MetaPhlAn": {"gib": 40, "snapshot": "metaphlan-vJan25"},
 }
 
 # Map a taxprofiler process name (trace `name`, e.g. "FASTP_PAIRED (SRR059371)")
@@ -59,12 +75,15 @@ PRICE_USD_PER_HR: dict[str, float] = {
 # include MultiQC/krakentools/standard-report, which are measured. FETCH_FASTQ is
 # also process_single; its container is ncbi/sra-tools (multi-arch, not aarchbio)
 # — reported, but flagged as not part of the aarchbio-unblocks-it claim.
+# MetaPhlAn + Kraken2 are MEMORY-optimized (r-family): Kraken2 holds k2_pluspf in
+# RAM; MetaPhlAn's bowtie2 against the full CHOCOPhlAnSGB index OOMs below ~64 GB
+# (it runs on r7g.4xlarge / 128 GB — see nextflow_config METAPHLAN_INSTANCE).
 STAGE_MAP: list[tuple[str, str, str, str]] = [
     # match-substring (upper),    stage label,        x86,           arm64
     ("FETCH_FASTQ",               "FETCH_FASTQ",       "c7i.large",   "c7g.large"),
     ("FASTP",                     "fastp",             "c7i.2xlarge", "c7g.2xlarge"),
     ("FASTQC",                    "FastQC",            "c7i.2xlarge", "c7g.2xlarge"),
-    ("METAPHLAN_METAPHLAN",       "MetaPhlAn",         "c7i.2xlarge", "c7g.2xlarge"),
+    ("METAPHLAN_METAPHLAN",       "MetaPhlAn",         "r7i.4xlarge", "r7g.4xlarge"),
     ("KRAKEN2_KRAKEN2",           "Kraken2",           "r7i.2xlarge", "r7g.2xlarge"),
     ("KRAKEN2STANDARDREPORT",     "Kraken2StdReport",  "c7i.large",   "c7g.large"),
     ("COMBINEKREPORTS",           "krakentools",       "c7i.large",   "c7g.large"),
@@ -269,6 +288,88 @@ def report_staging(records: list[dict], leg: str) -> None:
     print("     (times are instance/network-dependent — qualified by the env line above)")
 
 
+def db_delivery_comparison(stages: dict, leg: str, dl_mbps: float | None) -> dict:
+    """Compare the THREE ways to get a reference DB onto each task, focused on
+    COPYING — how long it takes and what that time costs.
+
+    The core trade the user wants surfaced: on the per-task-download approach the
+    worker sits *running* (billed) while it copies the DB — that wait is wasted
+    compute-$ on the task instance. The volume approach skips the copy (symlink +
+    bind-mount) and instead pays EBS-$ for the attached volume. Baked-AMI skips
+    both but inflates the AMI + every task root.
+
+    For each consuming stage (Kraken2 r7g.2xlarge, MetaPhlAn r7g.4xlarge) we
+    report, PER RUN (× n_tasks) and on the leg's instance $/hr:
+
+      A. baked-AMI         copy_s=0; compute_$=0; +EBS: DB GiB on each task root
+                           for task duration + standing AMI snapshot.
+      B. per-task download copy_s = DB_GiB / throughput; compute_$ = copy_s ×
+                           instance_$/hr × n_tasks (THE WASTED COMPUTE); EBS ~0.
+      C. zero-copy volume  copy_s ≈ mount (~seconds, ~0 compute_$); +EBS: DB GiB ×
+                           gp3 × task-hours (volume attached) + standing snapshot.
+
+    `dl_mbps` is the measured S3→instance throughput (from staging timings RODA
+    MB/s, a same-region proxy) used to estimate the download time in (B). If None,
+    download time/$ is left null (can't estimate without a throughput).
+    Returns a dict of per-stage, per-approach line items.
+    """
+    gp3_per_gb_hr = EBS_GP3_USD_PER_GB_MO / HOURS_PER_MONTH
+    out: dict = {"throughput_mbps_used": dl_mbps, "per_stage": {}}
+    standing_snapshot_mo = 0.0
+    run_download_compute = 0.0
+    run_volume_ebs = 0.0
+    for label, spec in DB_VOLUMES.items():
+        st = stages.get(label)
+        if not st:
+            continue
+        gib = spec["gib"]
+        n = st["n_tasks"]
+        inst = st["instance"]
+        price_hr = st["price_usd_per_hr"]
+        task_h_total = (st["realtime_sec_median"] * n) / 3600.0  # all consuming tasks
+
+        # (B) per-task download: time + the compute-$ of waiting on a billed box
+        dl_s = (gib * 1024 / dl_mbps) if dl_mbps else None  # GiB→MiB / (MiB/s)
+        dl_compute = ((dl_s * n) / 3600.0 * price_hr) if dl_s else None
+
+        # (C) zero-copy volume: EBS gp3 for the attach window (per task duration)
+        vol_ebs = gib * gp3_per_gb_hr * task_h_total
+        # standing snapshot (shared, $/mo) — counted once below, not per run
+
+        # (A) baked-AMI: DB GiB ride each task's ROOT for the task window (≈ same
+        # gp3 as the volume), plus a bigger standing AMI snapshot.
+        baked_root = gib * gp3_per_gb_hr * task_h_total
+
+        standing_snapshot_mo += gib * EBS_SNAPSHOT_USD_PER_GB_MO
+        if dl_compute:
+            run_download_compute += dl_compute
+        run_volume_ebs += vol_ebs
+
+        out["per_stage"][label] = {
+            "instance": inst, "n_tasks": n, "db_gib": gib,
+            "A_baked_ami":      {"copy_s": 0.0, "compute_usd": 0.0,
+                                 "per_run_root_ebs_usd": round(baked_root, 6)},
+            "B_per_task_dl":    {
+                "copy_s_each": round(dl_s, 1) if dl_s else None,
+                "copy_s_total": round(dl_s * n, 1) if dl_s else None,
+                "wasted_compute_usd": round(dl_compute, 6) if dl_compute else None},
+            "C_zero_copy_vol":  {"copy_s": "~mount (seconds)",
+                                 "compute_usd": 0.0,
+                                 "per_run_volume_ebs_usd": round(vol_ebs, 6)},
+        }
+    out["per_run_totals"] = {
+        "download_wasted_compute_usd": round(run_download_compute, 6) if dl_mbps else None,
+        "zero_copy_volume_ebs_usd": round(run_volume_ebs, 6),
+        "standing_snapshot_usd_per_mo": round(standing_snapshot_mo, 4),
+    }
+    out["reading"] = (
+        "Per-task-download (B) burns compute_$ while the billed worker waits on the "
+        "copy; zero-copy (C) replaces that with a few $ of EBS gp3 for the attach "
+        "window. Bigger DB or pricier instance → (B)'s wasted compute grows, (C)'s "
+        "EBS barely moves. Snapshot storage is standing (amortized across runs).")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -354,6 +455,33 @@ def main() -> None:
         report_staging(x86_staging, "x86")
         report_staging(arm_staging, "arm64")
 
+    # DB-delivery comparison — copy time + the compute-$ that copy-time costs on
+    # a billed worker, vs. the EBS-$ of the zero-copy volume. Uses the arm64 leg's
+    # consuming-stage instances (Kraken2/MetaPhlAn) + the measured S3 throughput
+    # from staging timings (RODA MB/s, same-region proxy for the DB download rate).
+    arm_dl_mbps = _med([r.get("roda_mbps") for r in arm_staging]) if arm_staging else None
+    db_cmp = db_delivery_comparison(arm, "arm64", arm_dl_mbps)
+    print("\n  ── DB delivery: copy time & cost (arm64 leg) ──")
+    print(f"     throughput for download estimate: {arm_dl_mbps} MB/s (measured, same-region)"
+          if arm_dl_mbps else "     (no throughput measured — download time/$ left null)")
+    for label, d in db_cmp["per_stage"].items():
+        b = d["B_per_task_dl"]
+        c = d["C_zero_copy_vol"]
+        a = d["A_baked_ami"]
+        print(f"     {label} ({d['instance']}, {d['db_gib']} GiB DB, n={d['n_tasks']}):")
+        print(f"        A baked-AMI       : copy 0s, compute $0, "
+              f"root-EBS ${a['per_run_root_ebs_usd']}/run")
+        if b["copy_s_each"] is not None:
+            print(f"        B per-task dl     : copy ~{b['copy_s_each']}s/task "
+                  f"({b['copy_s_total']}s total), WASTED compute ${b['wasted_compute_usd']}/run")
+        print(f"        C zero-copy vol   : copy ~0 (symlink+mount), compute $0, "
+              f"vol-EBS ${c['per_run_volume_ebs_usd']}/run")
+    t = db_cmp["per_run_totals"]
+    print(f"     per-run: download wasted-compute ${t['download_wasted_compute_usd']} "
+          f"vs zero-copy volume-EBS ${t['zero_copy_volume_ebs_usd']} "
+          f"(+ standing snapshot ${t['standing_snapshot_usd_per_mo']}/mo)")
+    print("     → " + db_cmp["reading"].replace("\n", " "))
+
     print("\n    Reading: per-stage is the real story — Kraken2 (memory-bound) is the")
     print("    swing factor we couldn't predict from price alone. Negative (arm64-")
     print("    slower) stages, if any, are flagged above and kept in.")
@@ -371,6 +499,7 @@ def main() -> None:
                 "per_stage": comparison,
                 "total_cost_usd": {"x86": round(tot_x, 4), "arm64": round(tot_a, 4)},
                 "data_movement": {"x86": x86_staging, "arm64": arm_staging},
+                "db_delivery_comparison": db_cmp,
             }, f, indent=2)
         print(f"    Wrote {args.json}")
 

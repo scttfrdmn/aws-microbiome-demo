@@ -84,6 +84,29 @@ line). Times are inherently variable by instance type, ENA bandwidth, AZ, and
 RODA-side load — the env block is printed so the numbers are interpretable, not
 treated as absolute.
 
+## DB delivery: copy time as compute cost vs. EBS cost
+
+`diff_traces.py` also compares the three ways to get a reference DB onto each
+task — centered on **copying: how long it takes and what that time costs**. The
+key trade: on the per-task-download approach the worker sits *running and billed*
+while it copies the DB, so copy-time is **wasted compute-$** on the task instance;
+the zero-copy volume replaces that with a little EBS-$ for the attach window.
+
+| approach | copy on worker | compute-$ during copy | EBS-$ |
+|----------|----------------|------------------------|-------|
+| **A — baked AMI** | 0 (DB in root) | $0 | DB GiB on each task root + bigger AMI snapshot |
+| **B — per-task S3 download** (#37) | DB_GiB ÷ throughput | **copy_s × instance $/hr × N** ← the wasted compute | ~0 |
+| **C — zero-copy volume** (nf-spawn 0.6.0) | ~0 (symlink+mount) | ~$0 | DB GiB × gp3 × task-hours + standing snapshot |
+
+Download time is estimated from the **measured** S3→instance throughput (the
+staging `roda_mbps`, a same-region proxy); compute-$ uses each consuming stage's
+real instance (`r7g.2xlarge` Kraken2, `r7g.4xlarge` MetaPhlAn) and `realtime`.
+Example (N=3, 200 MB/s): per-task download burns **~$0.19/run** of wasted compute
+(MetaPhlAn's 40 GB ≈ 205 s/task) vs **~$0.002/run** EBS for zero-copy — a ~100×
+swing that widens with DB size × instance price. Snapshot storage (24+40 GiB ×
+$0.05/GB-mo) is standing, amortized across runs. Printed per-stage + in `--json`
+under `db_delivery_comparison`.
+
 ## Honesty requirements (baked into diff_traces.py)
 
 - **N=5 is a pilot, not a census** — printed on every report; variance is real.
