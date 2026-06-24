@@ -1,0 +1,13 @@
+#mpa_vJan25_CHOCOPhlAnSGB_202503
+#/usr/local/bin/metaphlan --nproc 6 --input_type fastq SRR059375_stool_SRR059375_1.fastp.fastq.gz,SRR059375_stool_SRR059375_2.fastp.fastq.gz --bowtie2out SRR059375_stool_SRR059375_mpa_vJan25.metaphlan.bowtie2out.txt --bowtie2db metaphlan --index mpa_vJan25_CHOCOPhlAnSGB_202503 --biom SRR059375_stool_SRR059375_mpa_vJan25.metaphlan.biom --output_file SRR059375_stool_SRR059375_mpa_vJan25.metaphlan_profile.txt
+#11264 reads processed
+#SampleID	Metaphlan_Analysis
+#clade_name	NCBI_tax_id	relative_abundance	additional_species
+k__Bacteria	2	100.0	
+k__Bacteria|p__Fusobacteriota	2|32066	100.0	
+k__Bacteria|p__Fusobacteriota|c__Fusobacteriia	2|32066|203490	100.0	
+k__Bacteria|p__Fusobacteriota|c__Fusobacteriia|o__Fusobacteriales	2|32066|203490|203491	100.0	
+k__Bacteria|p__Fusobacteriota|c__Fusobacteriia|o__Fusobacteriales|f__Fusobacteriaceae	2|32066|203490|203491|203492	100.0	
+k__Bacteria|p__Fusobacteriota|c__Fusobacteriia|o__Fusobacteriales|f__Fusobacteriaceae|g__Fusobacterium	2|32066|203490|203491|203492|848	100.0	
+k__Bacteria|p__Fusobacteriota|c__Fusobacteriia|o__Fusobacteriales|f__Fusobacteriaceae|g__Fusobacterium|s__Fusobacterium_pseudoperiodonticum	2|32066|203490|203491|203492|848|2663009	100.0	
+k__Bacteria|p__Fusobacteriota|c__Fusobacteriia|o__Fusobacteriales|f__Fusobacteriaceae|g__Fusobacterium|s__Fusobacterium_pseudoperiodonticum|t__SGB5989	2|32066|203490|203491|203492|848|2663009|	100.0	k__Bacteria|p__Fusobacteriota|c__Fusobacteriia|o__Fusobacteriales|f__Fusobacteriaceae|g__Fusobacterium|s__Fusobacterium_periodonticum

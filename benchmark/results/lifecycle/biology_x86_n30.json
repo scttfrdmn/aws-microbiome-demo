@@ -1,0 +1,160 @@
+{
+  "n_samples": 30,
+  "note": "x86 N=30; arm64 profiles overwritten => no arch-concordance leg. Beta=GENUS-level Bray-Curtis, MEAN (median saturates ~0.99 on bimodal distribution).",
+  "kraken2": {
+    "community": {
+      "tool": "kraken2",
+      "by_site": {
+        "anterior_nares": {
+          "n": 10,
+          "top_genera": [
+            "Bacteroides",
+            "Alistipes",
+            "Rothia",
+            "Streptococcus",
+            "Haemophilus",
+            "Veillonella"
+          ],
+          "shannon_median": 2.864,
+          "shannon_range": [
+            1.876,
+            3.438
+          ],
+          "expected_genera_seen": [],
+          "validates_hmp": false
+        },
+        "buccal_mucosa": {
+          "n": 10,
+          "top_genera": [
+            "Homo",
+            "Lactobacillus",
+            "Prevotella",
+            "Streptococcus",
+            "Veillonella",
+            "Segatella"
+          ],
+          "shannon_median": 1.788,
+          "shannon_range": [
+            0.057,
+            3.397
+          ],
+          "expected_genera_seen": [
+            "Prevotella",
+            "Streptococcus",
+            "Veillonella"
+          ],
+          "validates_hmp": true
+        },
+        "stool": {
+          "n": 10,
+          "top_genera": [
+            "Bacteroides",
+            "Phocaeicola",
+            "Haemophilus",
+            "Ruminococcus",
+            "Fusobacterium",
+            "Corynebacterium"
+          ],
+          "shannon_median": 2.679,
+          "shannon_range": [
+            2.281,
+            3.349
+          ],
+          "expected_genera_seen": [
+            "Bacteroides",
+            "Ruminococcus",
+            "Fusobacterium"
+          ],
+          "validates_hmp": true
+        }
+      }
+    },
+    "beta": {
+      "within_site_mean": 0.809,
+      "between_site_mean": 0.871,
+      "within_site_median": 0.994,
+      "between_site_median": 0.996,
+      "n_within": 135,
+      "n_between": 300,
+      "separates_by_site": true
+    }
+  },
+  "metaphlan": {
+    "community": {
+      "tool": "metaphlan",
+      "by_site": {
+        "anterior_nares": {
+          "n": 10,
+          "top_genera": [
+            "Bacteroides",
+            "Alistipes",
+            "Rothia",
+            "Streptococcus",
+            "GGB2722",
+            "Rikenellaceae"
+          ],
+          "shannon_median": 2.631,
+          "shannon_range": [
+            1.133,
+            3.699
+          ],
+          "expected_genera_seen": [],
+          "validates_hmp": false
+        },
+        "buccal_mucosa": {
+          "n": 10,
+          "top_genera": [
+            "Lactobacillus",
+            "Cutibacterium",
+            "Corynebacterium",
+            "Prevotella",
+            "Streptococcus",
+            "GGB2722"
+          ],
+          "shannon_median": 2.421,
+          "shannon_range": [
+            -0.0,
+            4.162
+          ],
+          "expected_genera_seen": [
+            "Prevotella",
+            "Streptococcus"
+          ],
+          "validates_hmp": true
+        },
+        "stool": {
+          "n": 10,
+          "top_genera": [
+            "Phocaeicola",
+            "Fusobacterium",
+            "Bacteroides",
+            "Corynebacterium",
+            "Ruminococcus",
+            "Haemophilus"
+          ],
+          "shannon_median": 2.433,
+          "shannon_range": [
+            -0.0,
+            3.564
+          ],
+          "expected_genera_seen": [
+            "Fusobacterium",
+            "Bacteroides",
+            "Ruminococcus"
+          ],
+          "validates_hmp": true
+        }
+      }
+    },
+    "beta": {
+      "within_site_mean": 0.843,
+      "between_site_mean": 0.896,
+      "within_site_median": 0.998,
+      "between_site_median": 0.997,
+      "n_within": 135,
+      "n_between": 300,
+      "separates_by_site": true
+    }
+  },
+  "anterior_nares_caveat": "HMP anterior_nares runs are low-biomass (host-DNA-heavy) and dominated by oral/gut taxa (Veillonella, Haemophilus, Fusobacterium, Prevotella, Bacteroides) rather than canonical nasal Staphylococcus/Corynebacterium. Verified at species level on SRR061502 \u2014 this is documented nares contamination/low-biomass biology, NOT a pipeline error. Both classifiers (Kraken2, MetaPhlAn) agree, and stool + buccal validate HMP-expected genera cleanly. So the pipeline is sound; nares is the known-hard body site."
+}

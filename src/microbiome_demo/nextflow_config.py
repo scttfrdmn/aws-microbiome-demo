@@ -11,27 +11,59 @@ The config is rendered at runtime so we can inject:
 
 from __future__ import annotations
 
-# nf-core/taxprofiler process labels → instance types.
-# All steps run native on Graviton (arm64) via aarchbio containers — no QEMU.
-# In taxprofiler 2.0.0 the actual label→tool mapping is:
+# nf-core/taxprofiler process labels → instance types, per architecture.
+# The x86↔arm64 benchmark uses MATCHED PAIRS (identical vCPU/RAM, differ only in
+# family): c7i↔c7g, r7i↔r7g, r7i.4xlarge↔r7g.4xlarge. Never mix sizes — that
+# would confound architecture with instance size. arm64 runs aarchbio native
+# containers; x86 runs upstream amd64. Neither emulates.
+# taxprofiler 2.0.0 label→tool mapping:
 #   process_single: MultiQC, krakentools, KRAKEN2STANDARDREPORT (+ our FETCH_FASTQ)
 #   process_medium: fastp, FastQC, MetaPhlAn 4 — moderate RAM
 #   process_high:   Kraken2 — needs 32 GB RAM to hold k2_pluspf in memory
 #   process_low:    unused by any taxprofiler step (fallback only)
-_LABEL_INSTANCE_TYPES: dict[str, str] = {
-    "process_single": "c7g.large",    # ARM64: FETCH_FASTQ, MultiQC, krakentools, std-report
-    "process_low": "c7g.large",       # ARM64 fallback (aarchbio); unused by any taxprofiler step
-    "process_medium": "c7g.2xlarge",  # ARM64: fastp, FastQC, MetaPhlAn (aarchbio native arm64)
-    "process_high": "r7g.2xlarge",    # ARM64: Kraken2 — aarchbio mull + DB on arm64 AMI
+_LABEL_INSTANCE_TYPES_BY_ARCH: dict[str, dict[str, str]] = {
+    "arm64": {
+        "process_single": "c7g.large",    # FETCH_FASTQ, MultiQC, krakentools, std-report
+        "process_low": "c7g.large",       # fallback; unused by any taxprofiler step
+        "process_medium": "c7g.2xlarge",  # fastp, FastQC
+        "process_high": "r7g.2xlarge",    # Kraken2
+    },
+    "x86": {
+        "process_single": "c7i.large",    # matched pair of c7g.large
+        "process_low": "c7i.large",
+        "process_medium": "c7i.2xlarge",  # matched pair of c7g.2xlarge
+        "process_high": "r7i.2xlarge",    # matched pair of r7g.2xlarge
+    },
 }
 
 # MetaPhlAn runs on its own memory-optimized instance (withName override, not a
-# label) — bowtie2 against the full CHOCOPhlAnSGB index OOMs on the process_medium
-# c7g.2xlarge (16 GB). Default here must match METAPHLAN_INSTANCE in render().
-_METAPHLAN_INSTANCE_DEFAULT = "r7g.4xlarge"
+# label) — bowtie2 against the full CHOCOPhlAnSGB index OOMs at 16 GB.
+# Default per arch (matched pair). Must match METAPHLAN_INSTANCE in render().
+_METAPHLAN_INSTANCE_DEFAULT_BY_ARCH: dict[str, str] = {
+    "arm64": "r7g.4xlarge",
+    "x86": "r7i.4xlarge",  # matched pair
+}
 
-# All instance types in use — passed to truffle.derive_queue_size() + cost blend.
-# Includes the MetaPhlAn withName instance so its family/quota/cost are accounted.
+
+def _arch(cfg) -> str:
+    """Benchmark architecture: 'arm64' (default) or 'x86'. Read from cfg.BENCH_ARCH."""
+    a = getattr(cfg, "BENCH_ARCH", "arm64")
+    if a not in ("arm64", "x86"):
+        raise ValueError(f"BENCH_ARCH must be 'arm64' or 'x86', got {a!r}")
+    return a
+
+
+def all_instance_types(cfg) -> list[str]:
+    """Instance types in use for the configured arch — for truffle quota + cost."""
+    arch = _arch(cfg)
+    labels = _LABEL_INSTANCE_TYPES_BY_ARCH[arch]
+    mpa = getattr(cfg, "METAPHLAN_INSTANCE", _METAPHLAN_INSTANCE_DEFAULT_BY_ARCH[arch])
+    return sorted(set(labels.values()) | {mpa})
+
+
+# Back-compat module-level default (arm64) for callers that import these directly.
+_LABEL_INSTANCE_TYPES: dict[str, str] = _LABEL_INSTANCE_TYPES_BY_ARCH["arm64"]
+_METAPHLAN_INSTANCE_DEFAULT = _METAPHLAN_INSTANCE_DEFAULT_BY_ARCH["arm64"]
 ALL_INSTANCE_TYPES: list[str] = sorted(
     set(_LABEL_INSTANCE_TYPES.values()) | {_METAPHLAN_INSTANCE_DEFAULT}
 )
@@ -41,7 +73,7 @@ _TEMPLATE = """\
 // DO NOT EDIT: regenerated on each run with live quota data
 
 plugins {{
-    id 'nf-spawn@0.6.0'
+    id 'nf-spawn@0.8.0'
     id 'nf-amazon@2.8.0'   // required for s3:// workDir support
 }}
 
@@ -58,8 +90,8 @@ process {{
     withLabel: 'process_single' {{
         ext.instanceType = '{inst_single}'
         ext.region       = '{region}'
-        ext.ttl          = '2h'
-        ext.ami          = '{ami_id_arm64}'  // ARM64: FETCH_FASTQ + MultiQC/krakentools/std-report
+        {az_line}ext.ttl          = '2h'
+        ext.ami          = '{ami_id_tools}'  // tools AMI: FETCH_FASTQ + MultiQC/krakentools/std-report
         // fasterq-dump needs SRA file + ~6-7x SRA in scratch temp + FASTQ output.
         // HMP accessions run up to ~52GB SRA → ~360GB temp; 400GB avoids the
         // 'disk-limit exceeded' (exit 3) that 80GB hit on the larger samples.
@@ -68,22 +100,22 @@ process {{
     withLabel: 'process_low' {{
         ext.instanceType = '{inst_low}'
         ext.region       = '{region}'
-        ext.ttl          = '2h'
-        ext.ami          = '{ami_id_arm64}'  // ARM64 fallback
+        {az_line}ext.ttl          = '2h'
+        ext.ami          = '{ami_id_tools}'  // tools AMI fallback
         ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_medium' {{
         ext.instanceType = '{inst_medium}'
         ext.region       = '{region}'
-        ext.ttl          = '2h'
-        ext.ami          = '{ami_id_arm64}'  // ARM64: fastp/FastQC/MetaPhlAn on aarchbio
+        {az_line}ext.ttl          = '2h'
+        ext.ami          = '{ami_id_tools}'  // tools AMI: fastp/FastQC
         ext.volumeSize   = {volume_size}
     }}
     withLabel: 'process_high' {{
         ext.instanceType = '{inst_high}'
         ext.region       = '{region}'
-        ext.ttl          = '2h'
-        ext.ami          = '{ami_id_arm64}'  // ARM64 tools AMI (Docker+Nextflow; DB on EBS volume)
+        {az_line}ext.ttl          = '2h'
+        ext.ami          = '{ami_id_tools}'  // tools AMI (Docker+Nextflow; DB on EBS volume)
         ext.volumeSize   = {volume_size}
         // Kraken2 k2_pluspf DB mounted from a pre-built EBS snapshot (nf-spawn
         // 0.3.0 ext.volumes → spawn --attach-volume), instead of baked into the
@@ -94,8 +126,8 @@ process {{
     // Fallback for unlabelled processes.
     ext.instanceType = '{inst_low}'
     ext.region       = '{region}'
-    ext.ttl          = '2h'
-    ext.ami          = '{ami_id_arm64}'  // ARM64
+    {az_line}ext.ttl          = '2h'
+    ext.ami          = '{ami_id_tools}'  // tools AMI
     ext.volumeSize   = {volume_size}
 
     // Environment variables inherited by all nf-spawn task submissions.
@@ -147,25 +179,7 @@ process {{
     }}
 }}
 
-// ── Native arm64 container overrides (quay.io/aarchbio) ──────────────────────
-// taxprofiler 2.0.0 pins these to amd64-only Wave / biocontainers images, which
-// emulate or fail with `exec format error` on Graviton. A docker.registry
-// override does NOT catch Wave refs (they carry a full host), so each is
-// overridden per-process. Regex selectors because taxprofiler aliases modules
-// (FASTP_SINGLE/PAIRED, FASTQC_PROCESSED, *COMBINEKREPORTS*). Tags mirror
-// biocontainers <version>--<build>; verified present on aarchbio 2026-06,
-// Kraken2 mull (kraken2 2.1.5 + pigz 2.8 + coreutils 9.4) runtime-verified.
-process {{
-    withName: '.*FASTP.*'             {{ container = 'quay.io/aarchbio/fastp:0.24.0--h7dc49d2_1' }}
-    withName: '.*FASTQC.*'            {{ container = 'quay.io/aarchbio/fastqc:0.12.1--hdfd78af_0' }}
-    withName: 'METAPHLAN_METAPHLAN'   {{ container = 'quay.io/aarchbio/metaphlan:4.1.1--pyhdfd78af_0' }}
-    withName: 'KRAKEN2_KRAKEN2'       {{ container = 'quay.io/aarchbio/kraken2:2.1.5--pl5321h1e84f2d_0' }}
-    withName: 'MULTIQC'               {{ container = 'quay.io/aarchbio/multiqc:1.32--pyhdfd78af_2' }}
-    withName: '.*COMBINEKREPORTS.*'   {{ container = 'quay.io/aarchbio/krakentools:1.2--pyh7e72e81_0' }}
-    // KRAKEN2STANDARDREPORT pins nf-core/ubuntu:20.04 which is amd64-only;
-    // stock ubuntu:20.04 is multi-arch and the step is a trivial `cut`.
-    withName: 'KRAKEN2STANDARDREPORT' {{ container = 'ubuntu:20.04' }}
-}}
+{container_overrides}
 
 // Trace file written to S3 — the dashboard polls this for live progress.
 trace {{
@@ -189,23 +203,103 @@ report {{
 """
 
 
+# Native arm64 container overrides (quay.io/aarchbio). taxprofiler 2.0.0 pins
+# amd64-only Wave/biocontainers images that `exec format error` on Graviton; a
+# docker.registry override does NOT catch Wave refs (they carry a full host), so
+# each is overridden per-process. Regex selectors because taxprofiler aliases
+# modules (FASTP_SINGLE/PAIRED, FASTQC_PROCESSED, *COMBINEKREPORTS*). Tags mirror
+# biocontainers <version>--<build>; verified on aarchbio 2026-06, Kraken2 mull
+# (kraken2 2.1.5 + pigz 2.8 + coreutils 9.4) runtime-verified.
+# The x86 leg emits NO overrides — taxprofiler's upstream amd64 images run native.
+_AARCHBIO_CONTAINER_OVERRIDES = """\
+// ── Native arm64 container overrides (quay.io/aarchbio) ──────────────────────
+process {
+    withName: '.*FASTP.*'             { container = 'quay.io/aarchbio/fastp:0.24.0--h7dc49d2_1' }
+    withName: '.*FASTQC.*'            { container = 'quay.io/aarchbio/fastqc:0.12.1--hdfd78af_0' }
+    withName: 'METAPHLAN_METAPHLAN'   { container = 'quay.io/aarchbio/metaphlan:4.1.1--pyhdfd78af_0' }
+    withName: 'KRAKEN2_KRAKEN2'       { container = 'quay.io/aarchbio/kraken2:2.1.5--pl5321h1e84f2d_0' }
+    withName: 'MULTIQC'               { container = 'quay.io/aarchbio/multiqc:1.32--pyhdfd78af_2' }
+    withName: '.*COMBINEKREPORTS.*'   { container = 'quay.io/aarchbio/krakentools:1.2--pyh7e72e81_0' }
+    // KRAKEN2STANDARDREPORT pins nf-core/ubuntu:20.04 (amd64-only); stock
+    // ubuntu:20.04 is multi-arch and the step is a trivial `cut`.
+    withName: 'KRAKEN2STANDARDREPORT' { container = 'ubuntu:20.04' }
+}
+"""
+
+
+def tools_ami(cfg) -> str:
+    """The tools AMI for the configured arch (x86 → AMI_ID_X86, arm64 → AMI_ID_ARM64)."""
+    if _arch(cfg) == "x86":
+        return getattr(cfg, "AMI_ID_X86", "") or cfg.AMI_ID
+    return getattr(cfg, "AMI_ID_ARM64", "") or cfg.AMI_ID
+
+
 def render(cfg, queue_size: int) -> str:
     """Return a nextflow.config string with all values substituted.
 
+    Architecture-parametric: cfg.BENCH_ARCH selects the instance family pairs
+    (c7g/r7g vs c7i/r7i), the tools AMI, and whether the aarchbio arm64 container
+    overrides are emitted (arm64) or omitted so upstream amd64 images run (x86).
+    The DB EBS snapshots are arch-neutral and used either way.
+
     Args:
-        cfg:        config module (REGION, BUCKET, JOB_NAME, AMI_ID, VOLUME_SIZE).
+        cfg:        config module (REGION, BUCKET, JOB_NAME, AMI_ID, VOLUME_SIZE,
+                    BENCH_ARCH, AMI_ID_ARM64/AMI_ID_X86).
         queue_size: derived from truffle.derive_queue_size().
     """
-    # Kraken2 DB delivery: if a pre-built EBS snapshot is configured, mount it
-    # read-only on the Kraken2 task via nf-spawn's ext.volumes (the DB lives in a
-    # re-snapshottable volume, not baked into the AMI). Otherwise leave the line
-    # blank → the DB is expected on the AMI at the mount path (legacy bake path).
+    arch = _arch(cfg)
+    labels = _LABEL_INSTANCE_TYPES_BY_ARCH[arch]
+    ami_id_tools = tools_ami(cfg)
+    container_overrides = _AARCHBIO_CONTAINER_OVERRIDES if arch == "arm64" else (
+        "// x86 leg: no container overrides — taxprofiler's upstream amd64 images run native."
+    )
+
+    # Pin every task to one AZ (nf-spawn 0.7.0 ext.az → spawn launch --az, the
+    # released fix for nf-spawn#62) when cfg.BENCH_AZ is set — so volumes from
+    # FSR-warmed DB snapshots are fast-restored (FSR is per-AZ; an unpinned task
+    # can land in a cold AZ and lazy-load the DB from S3 at ~6-8 MB/s). Empty →
+    # spawn's default placement. The trailing newline+indent keeps the next ext
+    # line aligned in the rendered config.
+    bench_az = getattr(cfg, "BENCH_AZ", "")
+    az_line = f"ext.az           = '{bench_az}'\n        " if bench_az else ""
+
+    # ── DB delivery mode (precedence: FSx → EBS volume → baked AMI) ───────────
+    # FSx for Lustre is the WIDE-FAN-OUT answer: one S3-backed shared filesystem,
+    # mounted read-only by every task, no per-volume FSR credit limit (which caps
+    # EBS-snapshot volumes at ~10 warm concurrent — see the FSR-credit finding).
+    # The DB lives once on the FS at <fsx_mount>/<dbname>; tasks read it in place.
+    #
+    # NOTE: nf-spawn 0.7.0 does NOT yet forward ext.fsx — filed as nf-spawn#67
+    # (both the launch flag AND feeding the FSx mount into the #55 symlink path).
+    # This emission is wired READY for that release; the exact ext.fsx schema
+    # tracks #67 and may need a tweak when it lands. Until then FSX_ID is unset
+    # and we fall back to ext.volumes (clean at small N) or the baked DB.
+    fsx_id = getattr(cfg, "FSX_ID", "")
+    fsx_mount = getattr(cfg, "FSX_MOUNT", "/fsx")
+
+    def _db_delivery_line(snapshot: str, vol_mount: str, db_name: str) -> str:
+        """The per-process ext.* line that delivers a DB read-only, or ''.
+
+        FSx: ONE shared filesystem (fsx_id) mounted at fsx_mount on every task;
+        this DB lives at fsx_mount/<db_name>. The `paths: ['<db_name>']` field is
+        REQUIRED (nf-spawn 0.7.x #67): a shared FS roots at /fsx but DBs sit at
+        /fsx/<name>, so the symlink-eligible path must be <mount>/<name> — without
+        `paths`, nf-spawn only exposes the bare /fsx (basename 'fsx'), which won't
+        match the 'kraken2'/'metaphlan' stage name and the staged s3:// db_path
+        would be copied instead of symlinked. With it, db_path resolves zero-copy.
+        EBS: a snapshot volume at vol_mount. Neither set → baked-AMI path.
+        """
+        if fsx_id:
+            return (f"ext.fsx     = [ id: '{fsx_id}', mount: '{fsx_mount}', "
+                    f"paths: ['{db_name}'] ]")
+        if snapshot:
+            return f"ext.volumes = [[ snapshot: '{snapshot}', mount: '{vol_mount}', readOnly: true ]]"
+        return ""
+
+    # Kraken2 DB (process_high). On FSx it's /fsx/kraken2; on EBS the snapshot mount.
     db_snapshot = getattr(cfg, "KRAKEN2_DB_SNAPSHOT", "")
     db_mount = getattr(cfg, "KRAKEN2_DB_MOUNT", "/opt/databases/kraken2")
-    db_volume_line = (
-        f"ext.volumes = [[ snapshot: '{db_snapshot}', mount: '{db_mount}', readOnly: true ]]"
-        if db_snapshot else ""
-    )
+    db_volume_line = _db_delivery_line(db_snapshot, db_mount, "kraken2")
 
     # MetaPhlAn DB volume: scoped to the METAPHLAN_METAPHLAN process by NAME, not
     # the process_medium label (which fastp/FastQC also use — they must not get
@@ -223,32 +317,39 @@ def render(cfg, queue_size: int) -> str:
     # MetaPhlAn needs a MEMORY-OPTIMIZED instance, not the process_medium c7g.2xlarge
     # (8 vCPU / 16 GB): bowtie2-align against the full CHOCOPhlAnSGB index OOM-killed
     # (exit 137 / "Killed") at 16 GB. r7g.4xlarge = 16 vCPU / 128 GB. (Override: METAPHLAN_INSTANCE.)
-    mpa_instance = getattr(cfg, "METAPHLAN_INSTANCE", _METAPHLAN_INSTANCE_DEFAULT)
+    mpa_instance = getattr(
+        cfg, "METAPHLAN_INSTANCE", _METAPHLAN_INSTANCE_DEFAULT_BY_ARCH[arch]
+    )
+    # MetaPhlAn DB delivery via the same FSx→EBS precedence (DB at /fsx/metaphlan
+    # on FSx, basename matches the s3:// db_path marker for the #55 symlink).
+    mpa_delivery_line = _db_delivery_line(mpa_snapshot, mpa_mount, "metaphlan")
     metaphlan_volume_block = (
         f"""
     withName: 'METAPHLAN_METAPHLAN' {{
         ext.instanceType = '{mpa_instance}'
         ext.region       = '{cfg.REGION}'
-        ext.ttl          = '2h'
-        ext.ami          = '{getattr(cfg, "AMI_ID_ARM64", cfg.AMI_ID)}'
+        {az_line}ext.ttl          = '2h'
+        ext.ami          = '{ami_id_tools}'
         ext.volumeSize   = {mpa_root_gb}
-        ext.volumes = [[ snapshot: '{mpa_snapshot}', mount: '{mpa_mount}', readOnly: true ]]
+        {mpa_delivery_line}
     }}
 """
-        if mpa_snapshot else ""
+        if (mpa_snapshot or fsx_id) else ""
     )
     return _TEMPLATE.format(
         region=cfg.REGION,
         bucket=cfg.BUCKET,
         job_name=cfg.JOB_NAME,
         ami_id=cfg.AMI_ID,
-        ami_id_arm64=getattr(cfg, "AMI_ID_ARM64", cfg.AMI_ID),
+        ami_id_tools=ami_id_tools,
         queue_size=queue_size,
         volume_size=getattr(cfg, "VOLUME_SIZE", 40),
         db_volume_line=db_volume_line,
         metaphlan_volume_block=metaphlan_volume_block,
-        inst_single=_LABEL_INSTANCE_TYPES["process_single"],
-        inst_low=_LABEL_INSTANCE_TYPES["process_low"],
-        inst_medium=_LABEL_INSTANCE_TYPES["process_medium"],
-        inst_high=_LABEL_INSTANCE_TYPES["process_high"],
+        container_overrides=container_overrides,
+        az_line=az_line,
+        inst_single=labels["process_single"],
+        inst_low=labels["process_low"],
+        inst_medium=labels["process_medium"],
+        inst_high=labels["process_high"],
     )

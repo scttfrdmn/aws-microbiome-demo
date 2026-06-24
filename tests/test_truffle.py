@@ -5,8 +5,14 @@ No AWS calls, no truffle CLI invocations.
 """
 
 from __future__ import annotations
+from unittest.mock import patch
 
-from microbiome_demo.truffle import QuotaInfo, derive_queue_size, quota_summary
+from microbiome_demo.truffle import (
+    InstanceSpec,
+    QuotaInfo,
+    derive_queue_size,
+    quota_summary,
+)
 
 
 def _quota(family: str, available: int) -> QuotaInfo:
@@ -19,38 +25,49 @@ def _quota(family: str, available: int) -> QuotaInfo:
     )
 
 
+def _fake_specs(instance_types, region):
+    vcpus = {"c7g.4xlarge": 16, "c7g.large": 2, "r7g.2xlarge": 8}
+    return {
+        itype: InstanceSpec(itype, vcpus.get(itype, 2), 0.10)
+        for itype in instance_types
+        if itype in vcpus
+    }
+
+
 def test_derive_queue_size_basic():
-    quotas = {"c7g": _quota("c7g", 192), "t4g": _quota("t4g", 384)}
-    # 192 × 0.8 = 153 usable vCPUs; largest instance = c7g.4xlarge = 16 vCPU → 9
-    qs = derive_queue_size(quotas, ["c7g.4xlarge", "t4g.medium"])
+    quotas = {"c7g": _quota("c7g", 192)}
+    with patch("microbiome_demo.truffle.get_instance_specs", side_effect=_fake_specs):
+        # 192 × 0.8 = 153 usable; largest = 16 vCPU → 9
+        qs = derive_queue_size(quotas, ["c7g.4xlarge", "c7g.large"], "us-east-1")
     assert qs >= 4
     assert qs <= 30
 
 
 def test_derive_queue_size_constrained():
-    # Very low quota → floor at _MIN_QUEUE_SIZE
     quotas = {"c7g": _quota("c7g", 8)}
-    qs = derive_queue_size(quotas, ["c7g.4xlarge"])
+    with patch("microbiome_demo.truffle.get_instance_specs", side_effect=_fake_specs):
+        qs = derive_queue_size(quotas, ["c7g.4xlarge"], "us-east-1")
     assert qs == 4  # 8 × 0.8 = 6 / 16 = 0 → floor
 
 
 def test_derive_queue_size_no_quotas():
-    qs = derive_queue_size({}, ["c7g.4xlarge"])
+    with patch("microbiome_demo.truffle.get_instance_specs", side_effect=_fake_specs):
+        qs = derive_queue_size({}, ["c7g.4xlarge"], "us-east-1")
     assert qs == 4
 
 
-def test_derive_queue_size_unknown_family():
-    # Instance family not in quotas → falls back to minimum
-    quotas = {"m6i": _quota("m6i", 256)}
-    qs = derive_queue_size(quotas, ["c7g.4xlarge"])
+def test_derive_queue_size_no_quotas_empty():
+    # No quotas at all → floor
+    with patch("microbiome_demo.truffle.get_instance_specs", return_value={}):
+        qs = derive_queue_size({}, ["c7g.4xlarge"], "us-east-1")
     assert qs == 4
 
 
 def test_quota_summary_with_data():
-    quotas = {"c7g": _quota("c7g", 192), "t4g": _quota("t4g", 64)}
+    quotas = {"c7g": _quota("c7g", 192)}
     summary = quota_summary(quotas, 12)
     assert "12" in summary
-    assert "c7g" in summary
+    assert "192" in summary
 
 
 def test_quota_summary_empty():

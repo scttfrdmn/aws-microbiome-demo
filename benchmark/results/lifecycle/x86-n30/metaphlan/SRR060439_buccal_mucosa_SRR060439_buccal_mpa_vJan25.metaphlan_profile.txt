@@ -1,0 +1,31 @@
+#mpa_vJan25_CHOCOPhlAnSGB_202503
+#/usr/local/bin/metaphlan --nproc 6 --input_type fastq SRR060439_buccal_mucosa_SRR060439_buccal_1.fastp.fastq.gz,SRR060439_buccal_mucosa_SRR060439_buccal_2.fastp.fastq.gz --bowtie2out SRR060439_buccal_mucosa_SRR060439_buccal_mpa_vJan25.metaphlan.bowtie2out.txt --bowtie2db metaphlan --index mpa_vJan25_CHOCOPhlAnSGB_202503 --biom SRR060439_buccal_mucosa_SRR060439_buccal_mpa_vJan25.metaphlan.biom --output_file SRR060439_buccal_mucosa_SRR060439_buccal_mpa_vJan25.metaphlan_profile.txt
+#3268956 reads processed
+#SampleID	Metaphlan_Analysis
+#clade_name	NCBI_tax_id	relative_abundance	additional_species
+k__Bacteria	2	100.0	
+k__Bacteria|p__Actinomycetota	2|201174	90.33993	
+k__Bacteria|p__Firmicutes	2|1239	9.66007	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes	2|201174|1760	90.33993	
+k__Bacteria|p__Firmicutes|c__Tissierellia	2|1239|1737404	9.66007	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales	2|201174|1760|85007	48.66448	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Propionibacteriales	2|201174|1760|85009	41.67546	
+k__Bacteria|p__Firmicutes|c__Tissierellia|o__Tissierellales	2|1239|1737404|1737405	9.66007	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Propionibacteriales|f__Propionibacteriaceae	2|201174|1760|85009|31957	41.67546	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae	2|201174|1760|85007|1653	38.62053	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Lawsonellaceae	2|201174|1760|85007|2805586	10.04394	
+k__Bacteria|p__Firmicutes|c__Tissierellia|o__Tissierellales|f__Peptoniphilaceae	2|1239|1737404|1737405|1570339	9.66007	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Propionibacteriales|f__Propionibacteriaceae|g__Cutibacterium	2|201174|1760|85009|31957|1912216	41.67546	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium	2|201174|1760|85007|1653|1716	38.62053	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Lawsonellaceae|g__GGB2722	2|201174|1760|85007|2805586|	10.04394	
+k__Bacteria|p__Firmicutes|c__Tissierellia|o__Tissierellales|f__Peptoniphilaceae|g__Peptoniphilus	2|1239|1737404|1737405|1570339|162289	9.66007	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Propionibacteriales|f__Propionibacteriaceae|g__Cutibacterium|s__Cutibacterium_acnes	2|201174|1760|85009|31957|1912216|1747	41.67546	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_pseudodiphtheriticum	2|201174|1760|85007|1653|1716|37637	32.69167	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Lawsonellaceae|g__GGB2722|s__GGB2722_SGB3663	2|201174|1760|85007|2805586||	10.04394	
+k__Bacteria|p__Firmicutes|c__Tissierellia|o__Tissierellales|f__Peptoniphilaceae|g__Peptoniphilus|s__Peptoniphilus_lacydonensis	2|1239|1737404|1737405|1570339|162289|1673725	9.66007	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_accolens	2|201174|1760|85007|1653|1716|38284	5.92886	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Propionibacteriales|f__Propionibacteriaceae|g__Cutibacterium|s__Cutibacterium_acnes|t__SGB16955	2|201174|1760|85009|31957|1912216|1747|	41.67546	
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_pseudodiphtheriticum|t__SGB17013	2|201174|1760|85007|1653|1716|37637|	32.69167	k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_sp_EPI_003_04_2554_SCH2473622,k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_sp_KPL1995
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Lawsonellaceae|g__GGB2722|s__GGB2722_SGB3663|t__SGB3663	2|201174|1760|85007|2805586|||	10.04394	
+k__Bacteria|p__Firmicutes|c__Tissierellia|o__Tissierellales|f__Peptoniphilaceae|g__Peptoniphilus|s__Peptoniphilus_lacydonensis|t__SGB6692	2|1239|1737404|1737405|1570339|162289|1673725|	9.66007	k__Bacteria|p__Bacillota|c__Tissierellia|o__Tissierellales|f__Peptoniphilaceae|g__Peptoniphilus|s__Peptoniphilus_rhinitidis
+k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_accolens|t__SGB17097	2|201174|1760|85007|1653|1716|38284|	5.92886	k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_segmentosum,k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_sp_KPL1818,k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_sp_KPL1824,k__Bacteria|p__Actinomycetota|c__Actinomycetes|o__Mycobacteriales|f__Corynebacteriaceae|g__Corynebacterium|s__Corynebacterium_sp_KPL1998

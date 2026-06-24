@@ -1,0 +1,13 @@
+#mpa_vJan25_CHOCOPhlAnSGB_202503
+#/usr/local/bin/metaphlan --nproc 6 --input_type fastq SRR060445_buccal_mucosa_SRR060445_buccal_1.fastp.fastq.gz,SRR060445_buccal_mucosa_SRR060445_buccal_2.fastp.fastq.gz --bowtie2out SRR060445_buccal_mucosa_SRR060445_buccal_mpa_vJan25.metaphlan.bowtie2out.txt --bowtie2db metaphlan --index mpa_vJan25_CHOCOPhlAnSGB_202503 --biom SRR060445_buccal_mucosa_SRR060445_buccal_mpa_vJan25.metaphlan.biom --output_file SRR060445_buccal_mucosa_SRR060445_buccal_mpa_vJan25.metaphlan_profile.txt
+#924116 reads processed
+#SampleID	Metaphlan_Analysis
+#clade_name	NCBI_tax_id	relative_abundance	additional_species
+k__Bacteria	2	100.0	
+k__Bacteria|p__Firmicutes	2|1239	100.0	
+k__Bacteria|p__Firmicutes|c__Bacilli	2|1239|91061	100.0	
+k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales	2|1239|91061|186826	100.0	
+k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae	2|1239|91061|186826|33958	100.0	
+k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus	2|1239|91061|186826|33958|1578	100.0	
+k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_crispatus	2|1239|91061|186826|33958|1578|47770	100.0	
+k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_crispatus|t__SGB7045	2|1239|91061|186826|33958|1578|47770|	100.0	k__Bacteria|p__Bacillota|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_sp_UMNPBX16,k__Bacteria|p__Bacillota|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_sp_UMNPBX1,k__Bacteria|p__Bacillota|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_sp_UMNPBX12,k__Bacteria|p__Bacillota|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_sp_UMNPBX8

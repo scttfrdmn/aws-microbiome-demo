@@ -96,9 +96,10 @@ def main() -> None:
 
     # 1. Quota
     emit({"type": "phase", "label": "Querying vCPU quotas via truffle…"})
-    families = list({t.split(".")[0] for t in nextflow_config.ALL_INSTANCE_TYPES})
+    inst_types = nextflow_config.all_instance_types(cfg)  # arch-aware (cfg.BENCH_ARCH)
+    families = list({t.split(".")[0] for t in inst_types})
     quotas = truffle.query_quotas(cfg.REGION, families)
-    queue_size = truffle.derive_queue_size(quotas, nextflow_config.ALL_INSTANCE_TYPES, cfg.REGION)
+    queue_size = truffle.derive_queue_size(quotas, inst_types, cfg.REGION)
     emit({"type": "quota", "queue_size": queue_size,
           "summary": truffle.quota_summary(quotas, queue_size)})
 
@@ -119,11 +120,28 @@ def main() -> None:
 
     # 3. Upload configs
     emit({"type": "phase", "label": "Uploading SRR list and Nextflow config…"})
-    # SRR_ACCESSIONS env override (comma-separated SRRs) — for cheap smoke tests
-    # that pick small accessions instead of HMP_ACCESSIONS[:n]'s large head.
-    # Body site defaults to 'stool' (unused by the staging/QC path being tested).
+    # Sample selection, in priority order:
+    #  1. SAMPLES_PER_SITE=N — balanced N-per-body-site draw from HMP_ACCESSIONS
+    #     (real body sites: stool / buccal_mucosa / anterior_nares). This is the
+    #     science draw — equal groups so cross-site diversity + per-stage arch
+    #     stats are balanced. e.g. SAMPLES_PER_SITE=10 → 30 samples, 10 per site.
+    #  2. SRR_ACCESSIONS=csv — explicit small list (smoke tests); body_site=stool.
+    #  3. default — HMP_ACCESSIONS[:SAMPLE_COUNT].
+    per_site = os.environ.get("SAMPLES_PER_SITE")
     srr_override = os.environ.get("SRR_ACCESSIONS")
-    if srr_override:
+    if per_site:
+        import collections
+        n = int(per_site)
+        by_site: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
+        for srr, site in HMP_ACCESSIONS:
+            by_site[site].append((srr, site))
+        accessions = []
+        for site in sorted(by_site):  # deterministic site order
+            accessions.extend(by_site[site][:n])
+        sample_count = len(accessions)
+        emit({"type": "phase",
+              "label": f"Balanced draw: {n}/site × {len(by_site)} sites = {sample_count} samples"})
+    elif srr_override:
         accessions = [(s.strip(), "stool") for s in srr_override.split(",") if s.strip()]
         sample_count = len(accessions)
     else:
@@ -144,21 +162,22 @@ def main() -> None:
     head_cfg.INSTANCE_TYPE = getattr(cfg, "HEAD_INSTANCE_TYPE", "t4g.small")
     head_cfg.INSTANCE_COUNT = 1
 
-    # Attach the same read-only DB snapshots to the head node at their mount
-    # paths, so taxprofiler's head-side db_path 'exists' validation passes (the
-    # tasks get the same volumes via nf-spawn ext.volumes). nf-spawn 0.5.0 recipe.
-    head_attach = []
-    for snap_attr, mount_attr, default_mount in (
-        ("KRAKEN2_DB_SNAPSHOT", "KRAKEN2_DB_MOUNT", "/opt/databases/kraken2"),
-        ("METAPHLAN_DB_SNAPSHOT", "METAPHLAN_DB_MOUNT", "/opt/databases/metaphlan"),
-    ):
-        snap = getattr(cfg, snap_attr, "")
-        if snap:
-            head_attach.append(f"{snap}:{getattr(cfg, mount_attr, default_mount)}:ro")
-    head_cfg.HEAD_ATTACH_VOLUMES = head_attach
-    if head_attach:
+    # DB delivery is zero-copy via s3:// db_path markers + nf-spawn ext.volumes
+    # symlink (nf-spawn#65 resolution): databases.csv points db_path at an s3://
+    # marker (same filesystem as the s3:// workDir → no head-side foreign copy),
+    # and each task symlinks the staged input to its mounted EBS volume. So the
+    # head no longer needs the DB volumes attached for validation — the marker
+    # satisfies taxprofiler's exists:true check. Write the markers now.
+    db_names = []
+    if getattr(cfg, "KRAKEN2_DB_SNAPSHOT", ""):
+        db_names.append("kraken2")
+    if getattr(cfg, "METAPHLAN_DB_SNAPSHOT", ""):
+        db_names.append("metaphlan")
+    if db_names:
+        pipeline.write_db_markers(cfg, db_names)
         emit({"type": "phase",
-              "label": f"Head will mount {len(head_attach)} DB volume(s) for validation"})
+              "label": f"Wrote {len(db_names)} s3:// db_path marker(s) (zero-copy DB via ext.volumes)"})
+    head_cfg.HEAD_ATTACH_VOLUMES = []
 
     head_script = worker_script.render(cfg, nf_cfg_key, srr_key, main_nf_key)
     head_script_path = worker_script.write_temp(head_script)
@@ -167,53 +186,60 @@ def main() -> None:
     start_time = time.time()
     emit({"type": "head_launched", "instance_id": head_id})
 
-    # 5. Poll
-    print(f"\n  Polling every 15s (head={head_id})...\n")
-    max_polls = (90 * 60) // 15
-    for poll in range(max_polls):
-        time.sleep(15)
+    # 5. Poll + 6. Synthesis — wrapped so the s3:// db_path markers are always
+    # cleaned up (every exit path: completion, timeout, head failure, no summary).
+    try:
+        print(f"\n  Polling every 15s (head={head_id})...\n")
+        max_polls = (90 * 60) // 15
+        for poll in range(max_polls):
+            time.sleep(15)
 
-        # Use S3 progress.json for completion detection (workaround for spawn#26).
-        pipeline_done = pipeline.is_pipeline_complete(cfg)
+            # Use S3 progress.json for completion detection (workaround for spawn#26).
+            pipeline_done = pipeline.is_pipeline_complete(cfg)
 
-        if head_id:
-            statuses = spawn.poll_workers([head_id])
-            head_status = statuses.get(head_id, "running")
-            if head_status == "failed":
-                emit({"type": "error", "message": "Head instance failed."})
-                sys.exit(1)
+            if head_id:
+                statuses = spawn.poll_workers([head_id])
+                head_status = statuses.get(head_id, "running")
+                if head_status == "failed":
+                    emit({"type": "error", "message": "Head instance failed."})
+                    sys.exit(1)
 
-        prog = pipeline.poll_progress(cfg, start_time, queue_size)
-        emit({
-            "type": "progress",
-            "tasks_done":      prog.tasks_done,
-            "tasks_total":     prog.tasks_total,
-            "tasks_running":   prog.tasks_running,
-            "ec2_cost_usd":    prog.ec2_cost_usd,
-            "elapsed_seconds": prog.elapsed_seconds,
-            "roda_gb":         prog.data.roda_gb,
-            "fastq_gb":        prog.data.fastq_gb,
-        })
+            prog = pipeline.poll_progress(cfg, start_time, queue_size)
+            emit({
+                "type": "progress",
+                "tasks_done":      prog.tasks_done,
+                "tasks_total":     prog.tasks_total,
+                "tasks_running":   prog.tasks_running,
+                "ec2_cost_usd":    prog.ec2_cost_usd,
+                "elapsed_seconds": prog.elapsed_seconds,
+                "roda_gb":         prog.data.roda_gb,
+                "fastq_gb":        prog.data.fastq_gb,
+            })
 
-        if pipeline_done:
-            emit({"type": "phase", "label": "Nextflow complete. Building summary…"})
-            break
+            if pipeline_done:
+                emit({"type": "phase", "label": "Nextflow complete. Building summary…"})
+                break
 
-        if (poll + 1) % 4 == 0:
-            emit({"type": "phase", "label":
-                  f"{prog.tasks_done}/{prog.tasks_total} tasks · "
-                  f"{prog.elapsed_seconds/60:.1f} min elapsed"})
-    else:
-        emit({"type": "error", "message": "Timed out after 90 minutes."})
-        sys.exit(1)
+            if (poll + 1) % 4 == 0:
+                emit({"type": "phase", "label":
+                      f"{prog.tasks_done}/{prog.tasks_total} tasks · "
+                      f"{prog.elapsed_seconds/60:.1f} min elapsed"})
+        else:
+            emit({"type": "error", "message": "Timed out after 90 minutes."})
+            sys.exit(1)
 
-    # 6. Synthesis
-    summary = pipeline.read_summary(cfg)
-    if summary:
-        agent.synthesize(summary, emit)
-    else:
-        emit({"type": "error", "message": "No summary.json found in S3."})
-        sys.exit(1)
+        # 6. Synthesis
+        summary = pipeline.read_summary(cfg)
+        if summary:
+            agent.synthesize(summary, emit)
+        else:
+            emit({"type": "error", "message": "No summary.json found in S3."})
+            sys.exit(1)
+    finally:
+        # Always remove this job's s3:// db_path markers.
+        with contextlib.suppress(Exception):
+            pipeline.clear_db_markers(cfg)
+            emit({"type": "phase", "label": "Cleaned up s3:// db_path markers."})
 
 
 if __name__ == "__main__":
