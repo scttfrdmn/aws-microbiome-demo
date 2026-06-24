@@ -91,6 +91,14 @@ def launch_workers(
     ]
     if volume_size:
         cmd.extend(["--volume-size", str(volume_size)])
+    # Attach read-only DB snapshots to the head node at their mount paths. This
+    # is required by nf-spawn 0.5.0's volume-backed-DB recipe: nf-core/taxprofiler
+    # validates that every databases.csv db_path EXISTS on the head (head-side
+    # schema validation) before dispatching tasks. The tasks get the same volume
+    # via ext.volumes; the head needs it only so that validation passes.
+    # Each entry is a "snap-xxx:/mount:ro" spec (see _head_attach_volumes()).
+    for spec in getattr(cfg, "HEAD_ATTACH_VOLUMES", []) or []:
+        cmd.extend(["--attach-volume", spec])
     # Only pass --count for arrays; omit for single instances.
     if count > 1:
         cmd.extend(["--count", str(count)])

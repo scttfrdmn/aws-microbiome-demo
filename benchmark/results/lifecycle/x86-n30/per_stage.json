@@ -1,0 +1,92 @@
+{
+  "fastp": {
+    "n": 30,
+    "type": "c7i.2xlarge",
+    "price_per_hr": 0.34,
+    "median_s": 248.0,
+    "iqr_s": [
+      237.6,
+      254.9
+    ],
+    "min_s": 111.0,
+    "max_s": 450.2,
+    "cost_usd": 0.738,
+    "failures": 0,
+    "sum_billed_s": 7814.5
+  },
+  "fastqc": {
+    "n": 30,
+    "type": "c7i.2xlarge",
+    "price_per_hr": 0.34,
+    "median_s": 256.6,
+    "iqr_s": [
+      239.8,
+      375.8
+    ],
+    "min_s": 114.9,
+    "max_s": 459.1,
+    "cost_usd": 0.8586,
+    "failures": 0,
+    "sum_billed_s": 9091.3
+  },
+  "fastqc_processed": {
+    "n": 30,
+    "type": "c7i.2xlarge",
+    "price_per_hr": 0.34,
+    "median_s": 327.4,
+    "iqr_s": [
+      272.5,
+      538.8
+    ],
+    "min_s": 238.0,
+    "max_s": 544.3,
+    "cost_usd": 1.1179,
+    "failures": 0,
+    "sum_billed_s": 11836.2
+  },
+  "kraken2": {
+    "n": 30,
+    "type": "r7i.2xlarge",
+    "price_per_hr": 0.5292,
+    "median_s": 536.2,
+    "iqr_s": [
+      518.5,
+      542.2
+    ],
+    "min_s": 238.7,
+    "max_s": 829.8,
+    "cost_usd": 2.3521,
+    "failures": 0,
+    "sum_billed_s": 16000.6
+  },
+  "metaphlan": {
+    "n": 30,
+    "type": "r7i.4xlarge",
+    "price_per_hr": 1.0584,
+    "median_s": 1592.9,
+    "iqr_s": [
+      1278.7,
+      2046.5
+    ],
+    "min_s": 1043.6,
+    "max_s": 2180.8,
+    "cost_usd": 14.4547,
+    "failures": 0,
+    "sum_billed_s": 49165.8
+  },
+  "multiqc": {
+    "n": 1,
+    "type": "c7i.large",
+    "price_per_hr": 0.085,
+    "median_s": 277.5,
+    "iqr_s": [
+      277.5,
+      277.5
+    ],
+    "min_s": 277.5,
+    "max_s": 277.5,
+    "cost_usd": 0.0066,
+    "failures": 0,
+    "sum_billed_s": 277.5
+  }
+}

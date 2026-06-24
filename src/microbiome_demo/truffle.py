@@ -1,9 +1,5 @@
 """
-truffle.py  --  query AWS vCPU quotas via the truffle CLI.
-
-Used before launch to derive a safe Nextflow queueSize that won't breach
-the account's EC2 service quota.  truffle requires AWS credentials to
-query quotas (unlike spot price lookups which are public).
+truffle.py  --  query AWS EC2 quotas, vCPUs, and pricing via the truffle CLI.
 
 truffle CLI: brew install spore-host/tap/truffle
 """
@@ -12,17 +8,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
-
-# vCPU counts for instance types we actually use.
-_VCPUS: dict[str, int] = {
-    "t4g.medium": 2,
-    "t4g.large": 2,
-    "c7g.2xlarge": 8,
-    "c7g.4xlarge": 16,
-    "c7g.8xlarge": 32,
-    "t4g.small": 2,
-}
+from dataclasses import dataclass, field
+from functools import lru_cache
 
 # Conservative floor — always allow at least this many concurrent tasks
 # even if quota query fails or returns a suspiciously low number.
@@ -35,62 +22,101 @@ class QuotaInfo:
 
     family: str
     region: str
-    limit: int  # account's vCPU quota for this family
-    used: int  # currently running vCPUs (if available)
-    available: int  # limit - used
+    limit: int
+    used: int
+    available: int
+
+
+@dataclass
+class InstanceSpec:
+    """vCPU count and on-demand price for a single instance type."""
+
+    instance_type: str
+    vcpus: int
+    on_demand_price_usd: float  # per hour
+
+
+def _run_truffle(*args: str, timeout: int = 15) -> list[dict] | None:
+    try:
+        proc = subprocess.run(
+            ["truffle", *args, "-o", "json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        data = json.loads(proc.stdout)
+        return data if isinstance(data, list) else [data]
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        return None
+
+
+@lru_cache(maxsize=64)
+def get_instance_spec(instance_type: str, region: str) -> InstanceSpec | None:
+    """Return vCPU count and on-demand price from truffle spot."""
+    items = _run_truffle("spot", instance_type, "--regions", region)
+    if not items:
+        return None
+    for item in items:
+        if not item or item.get("instance_type") != instance_type:
+            continue
+        if item.get("region") != region:
+            continue
+        vcpus_raw = item.get("vcpus")
+        price_raw = item.get("on_demand_price")
+        if vcpus_raw is None or price_raw is None:
+            continue
+        return InstanceSpec(
+            instance_type=instance_type,
+            vcpus=int(vcpus_raw),
+            on_demand_price_usd=float(price_raw),
+        )
+    return None
+
+
+def get_instance_specs(instance_types: list[str], region: str) -> dict[str, InstanceSpec]:
+    """Return InstanceSpec for each type that truffle knows about."""
+    specs = {}
+    for itype in instance_types:
+        spec = get_instance_spec(itype, region)
+        if spec:
+            specs[itype] = spec
+    return specs
 
 
 def query_quotas(region: str, families: list[str]) -> dict[str, QuotaInfo]:
-    """Call truffle quotas for each instance family and return results.
+    """Call truffle quotas for the Standard family (covers all Graviton/x86).
 
-    Args:
-        region:   AWS region string (e.g. "us-east-1").
-        families: list of instance families (e.g. ["c7g", "t4g"]).
-
-    Returns:
-        dict mapping family → QuotaInfo.  Missing families are omitted.
+    Returns dict mapping instance family → QuotaInfo.
     """
     results: dict[str, QuotaInfo] = {}
+    items = _run_truffle("quotas", "--regions", region, "--family", "Standard")
+    if not items:
+        return results
 
-    for family in families:
-        try:
-            proc = subprocess.run(
-                [
-                    "truffle",
-                    "quotas",
-                    "--regions",
-                    region,
-                    "--family",
-                    family,
-                    "-o",
-                    "json",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=15,
-            )
-            if proc.returncode != 0 or not proc.stdout.strip():
-                continue
-
-            data = json.loads(proc.stdout)
-            # truffle returns a list of quota objects; take the first matching
-            # the requested region.
-            for item in data if isinstance(data, list) else [data]:
-                if item.get("region") == region or item.get("Region") == region:
-                    limit = int(item.get("limit", item.get("Limit", 0)))
-                    used = int(item.get("used", item.get("Used", 0)))
-                    results[family] = QuotaInfo(
-                        family=family,
-                        region=region,
-                        limit=limit,
-                        used=used,
-                        available=max(0, limit - used),
-                    )
-                    break
-
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
+    for item in items:
+        if not item or not isinstance(item, dict):
             continue
+        if item.get("region") != region:
+            continue
+        if item.get("type") != "On-Demand":
+            continue
+        limit = int(item.get("quota_vcpus", 0))
+        used = int(item.get("usage_vcpus", 0))
+        available = int(item.get("available_vcpus", max(0, limit - used)))
+        quota = QuotaInfo(
+            family="Standard",
+            region=region,
+            limit=limit,
+            used=used,
+            available=available,
+        )
+        # Apply this quota to every requested family (all fall under Standard)
+        for family in families:
+            results[family] = quota
+        break
 
     return results
 
@@ -98,45 +124,24 @@ def query_quotas(region: str, families: list[str]) -> dict[str, QuotaInfo]:
 def derive_queue_size(
     quotas: dict[str, QuotaInfo],
     instance_types: list[str],
+    region: str,
     headroom_pct: float = 0.80,
 ) -> int:
-    """Compute a safe Nextflow queueSize from quota data.
+    """Compute a safe Nextflow queueSize from quota and instance spec data.
 
-    Uses the most constrained family across all instance types we plan
-    to run, reserves headroom_pct of available capacity (leaving some
-    buffer for other workloads in the account), then converts to a task
-    count using the largest instance type in the mix.
-
-    Args:
-        quotas:        dict from query_quotas().
-        instance_types: all instance types that tasks may use.
-        headroom_pct:  fraction of available quota to use (default 80%).
-
-    Returns:
-        Recommended queueSize integer (at least _MIN_QUEUE_SIZE).
+    Uses the most constrained family, reserves headroom_pct of available
+    capacity, then divides by the largest vCPU count in the task mix.
     """
     if not quotas:
         return _MIN_QUEUE_SIZE
 
-    # Find the available vCPUs for each family we care about.
-    family_available: dict[str, int] = {}
-    for itype in instance_types:
-        family = itype.split(".")[0]  # "c7g.4xlarge" → "c7g"
-        if family in quotas:
-            family_available[family] = quotas[family].available
-
-    if not family_available:
-        return _MIN_QUEUE_SIZE
-
-    # Use the most constrained family.
-    min_available = min(family_available.values())
+    min_available = min(q.available for q in quotas.values())
     usable_vcpus = int(min_available * headroom_pct)
 
-    # Divide by the largest vCPU count in our mix (most constraining).
-    max_vcpus_per_task = max((_VCPUS.get(itype, 2) for itype in instance_types), default=2)
-    queue_size = max(_MIN_QUEUE_SIZE, usable_vcpus // max_vcpus_per_task)
+    specs = get_instance_specs(instance_types, region)
+    max_vcpus = max((s.vcpus for s in specs.values()), default=2)
 
-    return queue_size
+    return max(_MIN_QUEUE_SIZE, usable_vcpus // max_vcpus)
 
 
 def quota_summary(quotas: dict[str, QuotaInfo], queue_size: int) -> str:
@@ -144,5 +149,6 @@ def quota_summary(quotas: dict[str, QuotaInfo], queue_size: int) -> str:
     if not quotas:
         return f"Queue size: {queue_size} (quota unavailable — using default)"
 
-    parts = [f"{f}: {q.available} vCPUs free" for f, q in sorted(quotas.items())]
-    return f"Queue size: {queue_size}  ({', '.join(parts)})"
+    # All families share the same Standard quota — show it once
+    q = next(iter(quotas.values()))
+    return f"Queue size: {queue_size}  ({q.available} vCPUs free, Standard On-Demand)"

@@ -264,9 +264,10 @@ def _run_pipeline() -> None:
         # ── 1. Query vCPU quotas via truffle ─────────────────────────────
         emit({"type": "phase", "label": "Querying vCPU quotas via truffle…"})
 
-        families = list({t.split(".")[0] for t in nextflow_config.ALL_INSTANCE_TYPES})
+        inst_types = nextflow_config.all_instance_types(cfg)  # arch-aware (cfg.BENCH_ARCH)
+        families = list({t.split(".")[0] for t in inst_types})
         quotas = truffle.query_quotas(cfg.REGION, families)
-        queue_size = truffle.derive_queue_size(quotas, nextflow_config.ALL_INSTANCE_TYPES)
+        queue_size = truffle.derive_queue_size(quotas, inst_types, cfg.REGION)
 
         with _STATE_LOCK:
             _STATE["queue_size"] = queue_size
@@ -314,6 +315,18 @@ def _run_pipeline() -> None:
         # ── 4. Launch Nextflow head instance ──────────────────────────────
         emit({"type": "phase", "label": "Launching Nextflow head instance (t4g.small)…"})
 
+        # Zero-copy DB delivery (nf-spawn#65 resolution): write s3:// db_path
+        # markers so taxprofiler's exists:true passes without the head foreign-
+        # copying a local mount; tasks symlink the staged input to their
+        # ext.volumes mount. Cleaned up in the finally below.
+        db_names = [
+            n for n, attr in (("kraken2", "KRAKEN2_DB_SNAPSHOT"),
+                              ("metaphlan", "METAPHLAN_DB_SNAPSHOT"))
+            if getattr(cfg, attr, "")
+        ]
+        if db_names:
+            pipeline.write_db_markers(cfg, db_names)
+
         head_script = worker_script.render(cfg, nf_cfg_key, srr_key, main_nf_key)
         head_script_path = worker_script.write_temp(head_script)
 
@@ -348,6 +361,10 @@ def _run_pipeline() -> None:
             _STATE["status"] = "error"
             _STATE["error"] = msg
         emit({"type": "error", "message": msg})
+    finally:
+        # Always remove this job's s3:// db_path markers.
+        with contextlib.suppress(Exception):
+            pipeline.clear_db_markers(cfg)
 
 
 # ---------------------------------------------------------------------------

@@ -7,21 +7,20 @@ Run this ONCE before the talk.  It takes ~30-45 minutes.  The resulting AMI
 eliminates all software download/install time on demo day -- the instances
 boot ready to run Nextflow immediately.
 
-What the AMI contains:
+What the AMI contains (a lean TOOLS image — no reference databases):
   - Amazon Linux 2023 (ARM64 / Graviton3)
   - Nextflow 24.x  (the workflow engine)
+  - Docker + pigz + AWS CLI  (nf-spawn runs tasks via `docker run` on the host)
   - nf-core/taxprofiler (pulled at pipeline runtime via Docker)
-  - Kraken2 k2_pluspf_16_GB database  (11.9 GB, pre-staged on EBS)
-  - MetaPhlAn 4 (runs in nf-core/taxprofiler Docker container, no host install)
-  - SRA Toolkit  (converts .sra → FASTQ on-the-fly)
   - spored agent  (Spawn's termination daemon, auto-installed by spawn launch)
 
-Why a 16 GB Kraken2 database instead of the full standard (75 GB)?
-  k2_pluspf includes bacteria, archaea, viruses, fungi, AND protozoa --
-  everything relevant for human microbiome profiling.  The full standard
-  database adds plant genomes and other irrelevant taxa.  16 GB fits in
-  the 32 GB RAM of a c7g.4xlarge, allowing in-memory classification
-  which is the bottleneck for Kraken2 throughput.
+Reference databases are NOT baked in — they ride on attached EBS volumes:
+  - Kraken2 k2_pluspf_16GB → EBS snapshot, mounted on the Kraken2 task via
+    nf-spawn ext.volumes (config.KRAKEN2_DB_SNAPSHOT). Build it instance-free
+    with `spawn snapshot create --from s3://.../k2_pluspf_16_GB_*.tar.gz`.
+  - MetaPhlAn 4 marker DB → its own EBS volume (see config), same mechanism.
+  This keeps the AMI small, lets task root volumes stay small, and makes a DB
+  update a re-snapshot instead of a full AMI rebake. See docs/ami-vs-data-volume.md.
 
 Re-running safely:
   If AMI_ID in config.py is already set, this script prints the existing
@@ -107,19 +106,15 @@ python3 -m pip install --quiet boto3
 # Pre-pulling would require `docker login` which we avoid on bake instances.
 echo "Docker ready — nfcore/taxprofiler will be pulled at pipeline runtime"
 
-# --- Kraken2 k2_pluspf_16_GB database ---------------------------------------
-# 11.9 GB compressed → ~16 GB uncompressed.  Stored in /opt/databases so
-# the Nextflow pipeline can reference it without S3 download.
-mkdir -p /opt/databases/kraken2
-cd /opt/databases/kraken2
-aws s3 cp \\
-    s3://genome-idx/kraken/k2_pluspf_16_GB_20260226.tar.gz \\
-    . \\
-    --no-sign-request \\
-    --no-progress
-echo "Extracting Kraken2 database..."
-tar -xzf k2_pluspf_16_GB_20260226.tar.gz
-rm k2_pluspf_16_GB_20260226.tar.gz
+# --- Kraken2 database: NOT baked into the AMI anymore ------------------------
+# The k2_pluspf_16GB DB now lives in a pre-built EBS snapshot, attached read-only
+# to the Kraken2 task at /opt/databases/kraken2 via nf-spawn ext.volumes
+# (config.KRAKEN2_DB_SNAPSHOT). Building it: `spawn snapshot create --from
+# s3://genome-idx/kraken/k2_pluspf_16_GB_*.tar.gz --size 24` (spawn ≥0.49, EBS
+# direct APIs — instance-free). This keeps the AMI a lean tools image: the DB is
+# a re-snapshottable volume, root volumes stay small, and a DB update is a
+# re-snapshot rather than a full AMI rebake. See docs/ami-vs-data-volume.md.
+mkdir -p /opt/databases/kraken2 /opt/databases/metaphlan  # mount points for attached DB volumes
 
 # Note: MetaPhlAn 4 runs inside the nf-core/taxprofiler Docker container.
 # No host install needed — Docker pulls the container at pipeline runtime.
@@ -132,56 +127,29 @@ rm k2_pluspf_16_GB_20260226.tar.gz
 SPAWN_VER=$(curl -sf https://api.github.com/repos/spore-host/spawn/releases/latest \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))" 2>/dev/null \
     || echo "0.36.6")
-curl -fsSL --output /tmp/spawn.rpm \
-    "https://github.com/spore-host/spawn/releases/download/v${SPAWN_VER}/spawn_${SPAWN_VER}_linux_arm64.rpm"
+# Arch-aware spawn rpm: an arm64 AMI needs the aarch64 binary (spawn is a Go
+# binary, not arch-portable).  x86 bakes still get amd64.
+case "$(uname -m)" in
+    aarch64) SPAWN_RPM_ARCH="arm64" ;;
+    x86_64)  SPAWN_RPM_ARCH="amd64" ;;
+    *)       echo "Unknown arch $(uname -m)"; exit 1 ;;
+esac
+curl -fsSL --output /tmp/spawn.rpm \\
+    "https://github.com/spore-host/spawn/releases/download/v${SPAWN_VER}/spawn_${SPAWN_VER}_linux_${SPAWN_RPM_ARCH}.rpm"
 dnf install -y /tmp/spawn.rpm
 spawn version
 
 # --- nf-spawn plugin (Nextflow executor for spawn) --------------------------
-# Clones the pinned v0.1.0 tag, builds the JAR, and installs it into the
-# shared NXF_HOME/plugins/ directory so all Nextflow runs on this AMI find it.
-# nextflow.config references it as: plugins { id 'nf-spawn@0.2.6' }
-NF_SPAWN_VERSION="0.2.6"
+# Download the pre-built release ZIP — no Gradle build needed.
+NF_SPAWN_VERSION="0.6.0"
 NF_PLUGIN_DIR=/opt/nextflow_cache/plugins
-mkdir -p /opt/nf-spawn "${NF_PLUGIN_DIR}"
-cd /opt/nf-spawn
-# Try the pinned tag; fall back to main if the tag hasn't been pushed yet.
-git clone --depth 1 --branch "v${NF_SPAWN_VERSION}" \
-    https://github.com/spore-host/nf-spawn.git . 2>/dev/null \
-    || git clone --depth 1 https://github.com/spore-host/nf-spawn.git .
-# Install Gradle from the official distribution zip (not in AL2023 repos).
-GRADLE_VER="8.8"
-cd /tmp
-wget -q --timeout=120 "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip"
 dnf install -y unzip
-unzip -q "gradle-${GRADLE_VER}-bin.zip" -d /opt
-ln -sf "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
-cd /opt/nf-spawn
-# v0.1.3 fixes Gradle 8.x compat (#1) and executor registration (#7).
-gradle wrapper --gradle-version ${GRADLE_VER}
-./gradlew jar 2>&1
-# pf4j plugin discovery requires directory name == {id}-{version}.
-# If building from main the JAR may have a different version suffix; normalise it.
-BUILT_JAR=$(ls build/libs/nf-spawn-*.jar 2>/dev/null | head -1)
-if [ -z "${BUILT_JAR}" ]; then
-    echo "ERROR: nf-spawn JAR not found after build — check Gradle output above"
-    exit 1
-fi
 PLUGIN_DEST="${NF_PLUGIN_DIR}/nf-spawn-${NF_SPAWN_VERSION}"
-mkdir -p "${PLUGIN_DEST}/classes"
-# Nextflow pf4j requires the plugin content in a classes/ subdirectory.
-# The JAR must be exploded; class files live under classes/io/...,
-# and manifests under classes/META-INF/. This matches the structure of
-# plugins installed by `nextflow plugin install`.
-cd "${PLUGIN_DEST}/classes"
-unzip -q "${OLDPWD}/${BUILT_JAR}"
-cd -
-# Fix the version field in nextflow.plugins if it exists (pf4j legacy format).
-# v0.2.0+ uses extensions.idx instead, so this file may be absent.
-if [ -f "${PLUGIN_DEST}/classes/META-INF/nextflow.plugins" ]; then
-    sed -i "s/^version=.*/version=${NF_SPAWN_VERSION}/" \
-        "${PLUGIN_DEST}/classes/META-INF/nextflow.plugins"
-fi
+mkdir -p "${PLUGIN_DEST}"
+curl -fsSL "https://github.com/spore-host/nf-spawn/releases/download/v${NF_SPAWN_VERSION}/nf-spawn-${NF_SPAWN_VERSION}.zip" \
+    -o /tmp/nf-spawn.zip
+unzip -q /tmp/nf-spawn.zip -d "${PLUGIN_DEST}"
+rm /tmp/nf-spawn.zip
 echo "nf-spawn installed (exploded into classes/): ${PLUGIN_DEST}"
 find "${PLUGIN_DEST}" -type f
 
@@ -204,7 +172,6 @@ NXF_HOME=/opt/nextflow_cache \\
 # Make everything readable by all users (pipeline runs as ec2-user)
 chmod -R 755 /opt/databases
 chmod -R 755 /opt/nextflow_cache
-chmod -R 755 /opt/nf-spawn
 
 # --- Completion signal ------------------------------------------------------
 echo "=== AMI bake complete: $(date) ==="
@@ -248,10 +215,11 @@ def bake_ami(cfg) -> str:
             raise
         print(f"  Bucket exists: s3://{cfg.BUCKET}")
 
-    # Use c7g.4xlarge for the bake — 16 vCPU speeds up gradle, pip installs,
-    # and the Kraken2 database download.  Not configurable: the bake instance
-    # type is independent of the demo's head/task instance types.
-    bake_instance_type = "c7g.4xlarge"
+    # arm64 bake instance so the AMI (and its baked spawn CLI) target Graviton.
+    # No longer downloading the 16 GB Kraken2 DB (it's on an EBS volume now), so
+    # the bake is light — a small instance is plenty for dnf installs + nextflow
+    # pull. spawn auto-detects the latest AL2023 arm64 AMI for an arm64 type.
+    bake_instance_type = "c7g.xlarge"
 
     print("Launching bake instance via spawn...")
     print(f"  Instance type: {bake_instance_type}")
@@ -280,7 +248,7 @@ def bake_ami(cfg) -> str:
             "--region",
             cfg.REGION,
             "--volume-size",
-            "40",
+            "20",  # lean tools AMI — no 16 GB DB baked in (DB rides an EBS volume)
             "--user-data-file",
             bake_script_path,
             "--ttl",
@@ -317,55 +285,57 @@ def bake_ami(cfg) -> str:
         print("  Could not find microbiome-bake instance via spawn list.")
         sys.exit(1)
     print(f"\n  Instance launched: {instance_id}")
-    print("  Installing Nextflow, databases, Singularity images...")
-    print("  This takes ~30-45 minutes.  Grab a coffee.\n")
+    print("  Installing Nextflow, nf-spawn, Kraken2 database...")
+    print("  This takes ~2 hours.  Grab a coffee.\n")
 
-    # Poll until the bake script signals completion via /tmp/SPAWN_COMPLETE
+    # Wait for the bake script to signal completion via SPAWN_COMPLETE,
+    # then snapshot it into an AMI using `spawn ami create`.
     print("  Waiting for bake to complete (polling every 60s)...")
-    ec2 = boto3.client("ec2", region_name=cfg.REGION)
-
-    for attempt in range(180):  # up to 180 minutes
+    for attempt in range(180):
         time.sleep(60)
         status_result = subprocess.run(
-            ["spawn", "status", instance_id, "--check-complete"],
-            capture_output=True,
-            check=False,
+            ["spawn", "status", "microbiome-bake", "--check-complete"],
+            capture_output=True, check=False,
         )
-        # exit 0 = complete, 2 = still running, 1 = failed, 3 = error
         if status_result.returncode == 0:
             print(f"  Bake complete after ~{attempt + 1} minutes")
             break
         if status_result.returncode == 1:
-            print("  Bake FAILED — check /var/log/ami-bake.log on the instance")
+            print("  Bake FAILED — check s3://bucket/bake-logs/ for details")
             sys.exit(1)
         if (attempt + 1) % 5 == 0:
             print(f"  Still running... ({attempt + 1} min elapsed)")
     else:
-        print("  Bake timed out after 180 minutes — check instance logs")
+        print("  Bake timed out after 180 minutes")
         sys.exit(1)
 
-    # Create the AMI from the stopped instance
-    print("\n  Creating AMI from bake instance...")
-    ami_name = f"microbiome-demo-{int(time.time())}"
-    resp = ec2.create_image(
-        InstanceId=instance_id,
-        Name=ami_name,
-        Description="Microbiome demo AMI: Nextflow + Kraken2 + MetaPhlAn + databases",
-        NoReboot=False,
+    ami_name = "nf-spawn-arm64-tools-v0.3.0"
+    print(f"\n  Creating AMI '{ami_name}' via spawn ami create...")
+    result = subprocess.run(
+        [
+            "spawn", "ami", "create", "microbiome-bake",
+            "--name", ami_name,
+            "--description", "Microbiome demo ARM64/Graviton tools AMI: Nextflow + nf-spawn 0.3.0 + Docker (DBs on EBS volumes, not baked)",
+            "--wait",
+            "-o", "json",
+        ],
+        capture_output=True, text=True, check=False,
     )
-    ami_id = resp["ImageId"]
-    print(f"  AMI creation started: {ami_id}  (name: {ami_name})")
+    try:
+        data = json.loads(result.stdout)
+        ami_id = data.get("image_id") or data.get("ImageId") or data.get("ami_id")
+    except (json.JSONDecodeError, AttributeError):
+        # Fall back to parsing stdout for the AMI ID
+        import re
+        m = re.search(r"ami-[0-9a-f]+", result.stdout + result.stderr)
+        ami_id = m.group(0) if m else None
 
-    # Wait for the AMI to become available
-    print("  Waiting for AMI to be ready...")
-    waiter = ec2.get_waiter("image_available")
-    waiter.wait(ImageIds=[ami_id], WaiterConfig={"Delay": 30, "MaxAttempts": 80})  # up to 40 min
+    if not ami_id:
+        print(f"  Could not parse AMI ID from spawn output:\n{result.stdout}\n{result.stderr}")
+        sys.exit(1)
+
     print(f"  AMI ready: {ami_id}")
-
-    # Terminate the bake instance
-    print("  Terminating bake instance...")
-    subprocess.run(["spawn", "stop", instance_id, "-y"], check=False)
-
+    subprocess.run(["spawn", "terminate", "microbiome-bake", "-y"], check=False)
     return ami_id
 
 
@@ -375,15 +345,17 @@ if __name__ == "__main__":
 
     import config as cfg  # type: ignore[import]
 
-    # If AMI is already set in config, just report it
-    if getattr(cfg, "AMI_ID", ""):
-        print(f"AMI already configured: {cfg.AMI_ID}")
-        print("To rebuild: set AMI_ID = '' in config.py and re-run.")
+    # The bake now produces a native ARM64/Graviton AMI carrying the Kraken2 DB,
+    # so the whole taxprofiler pipeline runs native (aarchbio containers).
+    # If AMI_ID_ARM64 is already set, just report it.
+    if getattr(cfg, "AMI_ID_ARM64", ""):
+        print(f"ARM64 AMI already configured: {cfg.AMI_ID_ARM64}")
+        print("To rebuild: set AMI_ID_ARM64 = '' in config.py and re-run.")
         sys.exit(0)
 
-    print("=== Microbiome Demo — AMI Build ===\n")
+    print("=== Microbiome Demo — ARM64 AMI Build ===\n")
     ami_id = bake_ami(cfg)
 
     print("\nDone.  Paste into config.py:")
-    print(f'  AMI_ID = "{ami_id}"')
+    print(f'  AMI_ID_ARM64 = "{ami_id}"')
     print("\nNext step: make demo")

@@ -23,15 +23,7 @@ from typing import Any
 
 import boto3
 
-# On-demand prices in us-east-1 (ARM64, verified 2026-05)
-_INSTANCE_PRICES: dict[str, float] = {
-    "t4g.small": 0.0168,
-    "t4g.medium": 0.0336,
-    "t4g.large": 0.0672,
-    "c7g.2xlarge": 0.3264,
-    "c7g.4xlarge": 0.6528,
-    "c7g.8xlarge": 1.3056,
-}
+from . import truffle as _truffle
 
 
 @dataclass
@@ -100,20 +92,17 @@ def poll_progress(cfg, start_time: float, queue_size: int) -> PipelineProgress:
 
     elapsed = time.time() - start_time
 
-    # Cost estimate: head (t4g.small) + average task instance mix.
-    # ~40% queue utilisation on average across the run is a reasonable
-    # approximation before we have per-task billing data.
-    head_price = _INSTANCE_PRICES["t4g.small"]
-    task_price = _INSTANCE_PRICES.get(getattr(cfg, "INSTANCE_TYPE", "c7g.4xlarge"), 0.6528)
-    ec2_cost = (elapsed / 3600) * (head_price + queue_size * task_price * 0.4)
+    head_type = getattr(cfg, "HEAD_INSTANCE_TYPE", "c7g.medium")
+    head_spec = _truffle.get_instance_spec(head_type, cfg.REGION)
+    head_price = head_spec.on_demand_price_usd if head_spec else 0.0363
 
     p = PipelineProgress(
         queue_size=queue_size,
         elapsed_seconds=elapsed,
-        ec2_cost_usd=ec2_cost,
     )
 
     if raw is None:
+        p.ec2_cost_usd = (elapsed / 3600) * head_price
         return p
 
     p.status = raw.get("status", "running")
@@ -121,6 +110,16 @@ def poll_progress(cfg, start_time: float, queue_size: int) -> PipelineProgress:
     p.tasks_running = raw.get("tasks_running", 0)
     p.tasks_done = raw.get("tasks_done", 0)
     p.tasks_failed = raw.get("tasks_failed", 0)
+
+    # Cost: head node + actually-running task instances.
+    # Use blended average of task instance prices from truffle.
+    from . import nextflow_config as _nfc
+    task_specs = _truffle.get_instance_specs(_nfc.all_instance_types(cfg), cfg.REGION)
+    avg_task_price = (
+        sum(s.on_demand_price_usd for s in task_specs.values()) / len(task_specs)
+        if task_specs else 0.0
+    )
+    p.ec2_cost_usd = (elapsed / 3600) * (head_price + p.tasks_running * avg_task_price)
 
     # data_volumes key used in summary.json; flat in progress.json
     dv = raw.get("data_volumes") or raw
@@ -158,6 +157,52 @@ def clear_results(cfg) -> None:
     """Delete the results prefix for this job so stale data doesn't mislead polling."""
     s3 = boto3.client("s3", region_name=cfg.REGION)
     prefix = f"results/{cfg.JOB_NAME}/"
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=cfg.BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            s3.delete_object(Bucket=cfg.BUCKET, Key=obj["Key"])
+
+
+def db_marker_prefix(cfg) -> str:
+    """S3 key prefix holding the db_path markers for this job (no trailing slash)."""
+    return f"dbs/{cfg.JOB_NAME}"
+
+
+def db_marker_s3_uri(cfg, db_name: str) -> str:
+    """The s3:// URI taxprofiler's databases.csv points db_path at for `db_name`.
+
+    The basename (e.g. 'kraken2') MUST equal the ext.volumes mount basename so
+    nf-spawn (#55) symlinks the staged input to the mounted EBS volume on the
+    task instead of downloading — zero copy. The object at this URI is a tiny
+    MARKER, never the DB: it exists only so taxprofiler's head-side `exists:true`
+    schema check passes against the s3:// workDir filesystem (so Nextflow does
+    NOT foreign-copy a head-local path up to S3 and deadlock). Real DB bytes are
+    read in place off the volume via the symlink.
+    """
+    return f"s3://{cfg.BUCKET}/{db_marker_prefix(cfg)}/{db_name}"
+
+
+def write_db_markers(cfg, db_names: list[str]) -> None:
+    """Create the marker objects backing each db_path s3:// URI.
+
+    taxprofiler types db_path as format:path + exists:true, so the URI must
+    resolve to something. We write a zero-byte marker AT the db_path key itself
+    (an object whose key is the db dir name); the task-side symlink replaces it
+    with the real mounted volume, so the marker content is never read.
+    """
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    for name in db_names:
+        s3.put_object(
+            Bucket=cfg.BUCKET,
+            Key=f"{db_marker_prefix(cfg)}/{name}",
+            Body=b"nf-spawn ext.volumes marker - real DB is on the mounted EBS volume\n",
+        )
+
+
+def clear_db_markers(cfg) -> None:
+    """Delete this job's db_path marker objects (cleanup after a run)."""
+    s3 = boto3.client("s3", region_name=cfg.REGION)
+    prefix = f"{db_marker_prefix(cfg)}/"
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=cfg.BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
