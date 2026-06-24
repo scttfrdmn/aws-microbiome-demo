@@ -61,9 +61,14 @@ results/lifecycle/
   x86-n30-fsx.json
   staging_timings_*.json     per-arch DB staging phase timings
   biology_x86_n30.json       community structure + diversity + HMP validation
-  arm64-n30/ , x86-n30/      head log, trace, per-stage json, classifier profiles
+  arm64-n30/ , x86-n30/      head log, trace, per-stage json
 results/_archive/            superseded N=3 EBS+FSR pilots (provenance only)
 ```
+
+The raw per-sample classifier outputs (`*/kraken2/`, `*/metaphlan/`) are
+**gitignored** — large and regenerable. The scientific conclusions are captured in
+`biology_x86_n30.json` + `MEASUREMENTS.md`; re-pull the raw profiles from the run's
+S3 results prefix (step 2 above) when you need them for `analyze_study.py`.
 
 ## Fairness in one line
 

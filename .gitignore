@@ -6,3 +6,11 @@ __pycache__/
 .env
 samples/
 *.log
+
+# Raw per-sample classifier outputs are large and regenerable — keep them out of
+# git. Commit only the summaries (MEASUREMENTS.md, *-fsx.json, biology_*.json,
+# staging_timings*.json). Re-pull raw profiles from the run's S3 results prefix.
+benchmark/results/**/kraken2/
+benchmark/results/**/metaphlan/
+*.kraken2.report.txt
+*.metaphlan_profile.txt
