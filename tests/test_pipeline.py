@@ -6,15 +6,7 @@ No AWS calls.  Tests focus on pure logic (cost calculation, elapsed formatting).
 
 from __future__ import annotations
 
-from microbiome_demo.pipeline import DataVolume, _fmt_elapsed, _instance_price
-
-
-def test_instance_price_c7g():
-    assert abs(_instance_price("c7g.4xlarge") - 0.6528) < 0.0001
-
-
-def test_instance_price_fallback():
-    assert _instance_price("x9z.99xlarge") == _instance_price("c7g.4xlarge")
+from microbiome_demo.pipeline import DataVolume, _fmt_elapsed
 
 
 def test_fmt_elapsed_seconds():

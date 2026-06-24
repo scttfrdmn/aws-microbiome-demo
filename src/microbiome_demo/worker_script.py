@@ -45,6 +45,12 @@ _TOK_JOB_NAME  = "@@JOB_NAME@@"
 _TOK_NF_CFG    = "@@NF_CONFIG_KEY@@"   # S3 key for the rendered nextflow.config
 _TOK_SRR_KEY   = "@@SRR_LIST_KEY@@"    # S3 key for the SRR accession list JSON
 _TOK_MAIN_NF   = "@@MAIN_NF_KEY@@"     # S3 key for the custom main.nf pipeline
+# db_path values for databases.csv — s3:// marker URIs (NOT head-local mount
+# paths). An s3:// db_path is the same filesystem as the s3:// workDir, so the
+# head does NO foreign-file copy; the basename matches the ext.volumes mount so
+# nf-spawn symlinks the staged input to the volume on the task (zero copy).
+_TOK_KRAKEN2_DBPATH  = "@@KRAKEN2_DB_PATH@@"
+_TOK_METAPHLAN_DBPATH = "@@METAPHLAN_DB_PATH@@"
 
 # ---------------------------------------------------------------------------
 # Custom Nextflow pipeline (main.nf)
@@ -104,9 +110,19 @@ process FETCH_FASTQ {
     SRA_BYTES=\\$(stat -c%s ./${srr}.sra 2>/dev/null || echo 0)
 
     # ── Phase 2: SRA → FASTQ (fasterq-dump in ncbi/sra-tools) ────────────────
+    # Pull ncbi/sra-tools (correctly multi-arch) via this account's ECR
+    # PULL-THROUGH CACHE of Docker Hub, NOT Docker Hub directly: a wide fan-out
+    # (N tasks pulling at once) exhausts Docker Hub's per-IP anonymous pull limit
+    # (exit 125 'toomanyrequests'). The PTC repo authenticates upstream once and
+    # serves all subsequent task pulls from ECR in-region — no rate limit, the
+    # multi-arch manifest preserved so c7g(arm64)/c7i(amd64) each get their image.
+    ECR_REG=942542972736.dkr.ecr.us-east-1.amazonaws.com
+    SRATOOLS_IMG=\\${ECR_REG}/dockerhub/ncbi/sra-tools:latest
+    aws ecr get-login-password --region us-east-1 \\
+        | docker login --username AWS --password-stdin \\${ECR_REG}
     docker run --rm \
         -v \\${PWD}:/work -w /work \
-        ncbi/sra-tools:latest \
+        \\${SRATOOLS_IMG} \
         fasterq-dump --threads 2 --split-files --outdir /work ./${srr}.sra
     T2=\\$(date +%s.%N)
     FASTQ_RAW_BYTES=\\$(du -cb ./*.fastq 2>/dev/null | tail -1 | cut -f1 || echo 0)
@@ -214,7 +230,10 @@ fi
 # ── Install nf-spawn plugin from pre-built release ZIP ───────────────────────
 # Releases publish a pre-built ZIP with the correct classes/ structure.
 # No build step needed — just download and unzip.
-TARGET_NF_SPAWN_VERSION="0.6.0"
+# 0.7.0 adds ext.az (→ --az, pin tasks to the FSR AZ, #62); 0.8.0 adds ext.fsx/
+# ext.efs (→ --fsx-id/--efs-id, shared reference filesystem, #67) for wide
+# fan-out over a stable DB without the EBS+FSR per-volume credit limit.
+TARGET_NF_SPAWN_VERSION="0.8.0"
 NF_PLUGIN_DIR="/opt/nextflow_cache/plugins"
 NF_SPAWN_PLUGIN_DIR="${NF_PLUGIN_DIR}/nf-spawn-${TARGET_NF_SPAWN_VERSION}"
 if [ ! -d "${NF_SPAWN_PLUGIN_DIR}/classes" ]; then
@@ -312,16 +331,23 @@ print(f"Samplesheet: {len(rows)} samples → {out}")
 PYEOF
 
 # ── Build databases CSV ──────────────────────────────────────────────────────
-# nf-core/taxprofiler v2+ requires a databases CSV. Each db_path is the MOUNT
-# point of a per-task EBS volume (nf-spawn ext.volumes), not a baked-AMI path:
-#   kraken2  → /opt/databases/kraken2   (k2_pluspf_16GB, on process_high)
-#   metaphlan→ /opt/databases/metaphlan (vJan25 marker DB, on METAPHLAN_METAPHLAN)
-# taxprofiler's metaphlan module locates the bowtie2 index by globbing db_path
-# for *rev.1.bt2*, so db_path just needs to be the mounted DB dir.
+# nf-core/taxprofiler v2+ requires a databases CSV. db_path is typed format:path
+# + exists:true, so Nextflow wraps it in file(). We point it at an s3:// MARKER
+# URI — NOT the head-local mount (/opt/databases/...). Why:
+#   * A head-LOCAL db_path + s3:// workDir is "foreign" to Nextflow, so its
+#     FilePorter bulk-copies the whole DB up to S3 on the head before any task
+#     runs — that stalls on the 16 GB hash.k2d and deadlocks (nf-spawn#65).
+#   * An s3:// db_path is the SAME filesystem as the s3:// workDir → no foreign
+#     copy on the head; the marker object just satisfies exists:true.
+#   * On the task, nf-spawn (#55) matches the staged input's basename
+#     (kraken2 / metaphlan) to the ext.volumes mount and SYMLINKS it, so the
+#     tool reads the real DB in place off the EBS volume — zero copy anywhere.
+# taxprofiler's metaphlan module globs db_path for *rev.1.bt2*; that glob runs on
+# the task against the symlinked mount, so the volume contents satisfy it.
 cat > /tmp/nf-head/databases.csv << 'DBEOF'
 tool,db_name,db_params,db_path
-kraken2,k2_pluspf_16gb,,/opt/databases/kraken2
-metaphlan,mpa_vJan25,,/opt/databases/metaphlan
+kraken2,k2_pluspf_16gb,,@@KRAKEN2_DB_PATH@@
+metaphlan,mpa_vJan25,,@@METAPHLAN_DB_PATH@@
 DBEOF
 echo "Databases CSV: $(cat /tmp/nf-head/databases.csv | wc -l) entries"
 
@@ -631,6 +657,16 @@ print(f"Summary written: {summary['total_samples']} samples, "
       f"{summary['data_volumes']['roda_bytes_read']:,} bytes from RODA")
 PYEOF
 
+# ── Harvest per-task billed-time signal ──────────────────────────────────────
+# On the spawn executor the Nextflow trace realtime/duration columns are
+# wrapper-local (sub-second) and useless for per-stage timing. The AUTHORITATIVE
+# per-task wall-clock is nf-spawn's own lifecycle log: "Submitting task ... to
+# spawn instance 'nf-X'" and "Task ... completed (exit C) on instance 'nf-X'",
+# both timestamped. Upload .nextflow.log so the analysis can parse submit→
+# complete per task (≈ EC2 billed lifetime). Also upload the classify timeline.
+aws s3 cp /tmp/nf-head/.nextflow.log \
+    "${RESULTS_PREFIX}/nextflow.head.log" --region "${REGION}" --no-progress || true
+
 touch /tmp/SPAWN_COMPLETE
 echo "=== Head node complete: $(date) (Nextflow exit: ${NF_EXIT}) ==="
 """
@@ -638,6 +674,12 @@ echo "=== Head node complete: $(date) (Nextflow exit: ${NF_EXIT}) ==="
 
 def render(cfg, nf_config_key: str, srr_list_key: str, main_nf_key: str = "") -> str:
     """Return the head node bash script with config values substituted."""
+    from . import pipeline
+
+    # db_path s3:// marker URIs (basename == ext.volumes mount basename so
+    # nf-spawn symlinks them to the volume on the task). See pipeline.write_db_markers.
+    kraken2_db_path = pipeline.db_marker_s3_uri(cfg, "kraken2")
+    metaphlan_db_path = pipeline.db_marker_s3_uri(cfg, "metaphlan")
 
     def _sub(s: str) -> str:
         return (
@@ -647,6 +689,8 @@ def render(cfg, nf_config_key: str, srr_list_key: str, main_nf_key: str = "") ->
             .replace(_TOK_NF_CFG,    nf_config_key)
             .replace(_TOK_SRR_KEY,   srr_list_key)
             .replace(_TOK_MAIN_NF,   main_nf_key or f"pipeline/{cfg.JOB_NAME}/main.nf")
+            .replace(_TOK_KRAKEN2_DBPATH, kraken2_db_path)
+            .replace(_TOK_METAPHLAN_DBPATH, metaphlan_db_path)
         )
 
     return _sub(_HEAD_SCRIPT)

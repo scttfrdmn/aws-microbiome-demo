@@ -1,0 +1,11 @@
+{
+  "kraken2_download_s": 77.2186,
+  "kraken2_tarball_bytes": 11981344174.0,
+  "kraken2_extract_s": 146.867,
+  "kraken2_sync_s": 128.656,
+  "metaphlan_install_s": 3309.62,
+  "metaphlan_sync_s": 270.161,
+  "kraken2_source": "s3://genome-idx/kraken/k2_pluspf_16_GB_20260226.tar.gz",
+  "metaphlan_source": "metaphlan --install mpa_vJan25_CHOCOPhlAnSGB_202503",
+  "staged_at": "2026-06-17T19:22:48Z"
+}

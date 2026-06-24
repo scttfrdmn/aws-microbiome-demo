@@ -1,0 +1,218 @@
+{
+  "run_id": "arm64-n30-fsx",
+  "arch": "arm64",
+  "n_samples": 30,
+  "samples_per_site": 10,
+  "phases": [
+    {
+      "name": "stage",
+      "seconds": 3932.5,
+      "bytes_moved": 47981344174,
+      "instances": [
+        {
+          "type": "c7g.2xlarge",
+          "seconds": 3932.5
+        }
+      ],
+      "fsx_gib_hours": null,
+      "notes": {
+        "kraken2_download_s": 77.2186,
+        "metaphlan_install_s": 3309.62,
+        "source": "genome-idx + metaphlan --install",
+        "s3_puts": 30
+      },
+      "cost_usd": 0.3169
+    },
+    {
+      "name": "provision",
+      "seconds": 1200,
+      "bytes_moved": 0,
+      "instances": [
+        {
+          "type": "c7g.large",
+          "seconds": 1200
+        }
+      ],
+      "fsx_gib_hours": [
+        1200,
+        1.5
+      ],
+      "notes": {
+        "what": "FSx PERSISTENT_2 1200GiB create + scoped DRA"
+      },
+      "cost_usd": 0.3817
+    },
+    {
+      "name": "run",
+      "seconds": 2160,
+      "bytes_moved": 90000000000,
+      "instances": [
+        {
+          "type": "c7i.large",
+          "seconds": 2160
+        },
+        {
+          "type": "c7g.2xlarge",
+          "seconds": 6901.5
+        },
+        {
+          "type": "c7g.2xlarge",
+          "seconds": 9482.5
+        },
+        {
+          "type": "c7g.2xlarge",
+          "seconds": 11152.8
+        },
+        {
+          "type": "r7g.4xlarge",
+          "seconds": 50825.0
+        },
+        {
+          "type": "r7g.2xlarge",
+          "seconds": 17011.8
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 261.4
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7g.large",
+          "seconds": 700
+        }
+      ],
+      "fsx_gib_hours": [
+        1200,
+        0.75
+      ],
+      "notes": {
+        "metaphlan_median_s": 1619.5,
+        "kraken2_median_s": 639.8,
+        "all_30_30_completed": true
+      },
+      "cost_usd": 17.0101
+    }
+  ],
+  "totals": {
+    "one_time_usd": 0.6986,
+    "per_run_usd": 17.0101,
+    "total_usd": 17.7087,
+    "wall_clock_s": 7292.5,
+    "bytes_moved": 137981344174
+  }
+}

@@ -1,0 +1,215 @@
+{
+  "run_id": "x86-n30-fsx",
+  "arch": "x86",
+  "n_samples": 30,
+  "samples_per_site": 10,
+  "phases": [
+    {
+      "name": "stage",
+      "seconds": 4803.2,
+      "bytes_moved": 47981344174,
+      "instances": [
+        {
+          "type": "c7g.2xlarge",
+          "seconds": 4803.2
+        }
+      ],
+      "fsx_gib_hours": null,
+      "notes": {
+        "metaphlan_install_s": 4181.88,
+        "s3_puts": 30
+      },
+      "cost_usd": 0.3871
+    },
+    {
+      "name": "provision",
+      "seconds": 1200,
+      "bytes_moved": 0,
+      "instances": [
+        {
+          "type": "c7g.large",
+          "seconds": 1200
+        }
+      ],
+      "fsx_gib_hours": [
+        1200,
+        1.5
+      ],
+      "notes": {
+        "what": "FSx + scoped DRA"
+      },
+      "cost_usd": 0.3817
+    },
+    {
+      "name": "run",
+      "seconds": 5700,
+      "bytes_moved": 90000000000,
+      "instances": [
+        {
+          "type": "c7i.large",
+          "seconds": 5700
+        },
+        {
+          "type": "c7i.2xlarge",
+          "seconds": 7814.5
+        },
+        {
+          "type": "c7i.2xlarge",
+          "seconds": 9091.3
+        },
+        {
+          "type": "c7i.2xlarge",
+          "seconds": 11836.2
+        },
+        {
+          "type": "r7i.2xlarge",
+          "seconds": 16000.6
+        },
+        {
+          "type": "r7i.4xlarge",
+          "seconds": 49165.8
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 277.5
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        },
+        {
+          "type": "c7i.large",
+          "seconds": 700
+        }
+      ],
+      "fsx_gib_hours": [
+        1200,
+        1.5
+      ],
+      "notes": {
+        "metaphlan_median_s": 1592.9,
+        "all_30_30_completed": true
+      },
+      "cost_usd": 20.5159
+    }
+  ],
+  "totals": {
+    "one_time_usd": 0.7688,
+    "per_run_usd": 20.5159,
+    "total_usd": 21.2847,
+    "wall_clock_s": 11703.2,
+    "bytes_moved": 137981344174
+  }
+}
