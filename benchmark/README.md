@@ -1,121 +1,73 @@
-# Demo Graviton benchmark — x86 vs arm64 (real EC2, nf-core/taxprofiler)
+# Benchmark harness — how to run it
 
-The authentic head-to-head this demo was built to enable: run the **same
-pipeline, same samples, same data** on x86 and on Graviton, measure **both**
-per-stage wall-clock and dollars, and present the real ratio — not a price
-projection. Protocol of record: aarchbio `benchmark/demo-graviton-protocol.md`.
+The measurement study (Graviton vs x86, FSx-backed, full lifecycle) that this demo
+was built to enable. This page is the **runbook**. For the *why* — fairness
+controls, the timing trap, the DB-delivery decision, biology-stat fixes — see:
 
-Both legs are **native** — x86 runs native amd64 containers, arm64 runs
-[aarchbio](https://github.com/playgroundlogic/aarchbio) native arm64 containers.
-Neither emulates. This measures native-vs-native price/performance, the honest
-number; the emulation tax is a separate, already-known story.
+- **[../docs/methodology.md](../docs/methodology.md)** — protocol + fairness controls
+- **[../docs/results.md](../docs/results.md)** — the results of record (N=30)
+- **[../docs/decisions/](../docs/decisions/)** — the design decisions
+- **[results/lifecycle/MEASUREMENTS.md](results/lifecycle/MEASUREMENTS.md)** — raw running log
 
-## Fairness controls (only architecture may differ)
+> **Status:** complete. Both arches ran clean 30/30 at N=30. See [STATUS.md](STATUS.md).
 
-- **Same samples** — `HMP_ACCESSIONS[:5]` is deterministic; both legs use the
-  identical 5 accessions.
-- **Same instance spec, differ only in family** — `c7i↔c7g`, `r7i↔r7g` at
-  identical vCPU/RAM. Never `c7i.2xlarge` vs `c7g.4xlarge` (that confounds arch
-  with size).
-- **NO burstable (t-family) instances anywhere in the measured path.** t4g/t3 are
-  credit-based + shared-core — the same workload varies ~2× with credit state, so
-  you'd measure credit balance, not architecture. Every measured stage and the
-  head node run on a fixed-performance family (see the instance table below).
-- **Same region/AZ** (us-east-1) — same RODA locality.
-- **Same pipeline version** — both resolve nf-core/taxprofiler 2.0.0.
+## The scripts
 
-## Instance pairs (the controlled variable)
+| script | role | gated? |
+|--------|------|--------|
+| `build_fsx_db.py` | stage Kraken2 + MetaPhlAn DBs from canonical sources onto S3→FSx, timing every phase | `--plan` prints the plan + user-data; takes **no** action |
+| `lifecycle_metrics.py` | record/render per-phase **time · data · cost**; one-time vs per-run + amortization | recorder/analyzer (pure stdlib) |
+| `analyze_study.py` | per-stage arch timing (from head `nextflow.log`) + biology validation | analyzer |
+| `diff_traces.py` | legacy N=3 trace differ — **superseded** for per-stage timing (trace `realtime` is wrapper-local on the spawn executor) | analyzer |
 
-| Stage (taxprofiler 2.0.0)        | label          | x86 leg      | arm64 leg    |
-|----------------------------------|----------------|--------------|--------------|
-| FETCH_FASTQ                      | process_single | c7i.large    | c7g.large    |
-| fastp / FastQC / MetaPhlAn       | process_medium | c7i.2xlarge  | c7g.2xlarge  |
-| Kraken2                          | process_high   | r7i.2xlarge  | r7g.2xlarge  |
-| MultiQC / krakentools / std-rep  | process_single | c7i.large    | c7g.large    |
-| **head node** (Nextflow only)    | —              | c7i.large    | c7g.large    |
+## Running a lifecycle leg (per arch)
 
-FETCH_FASTQ's container is `ncbi/sra-tools` (multi-arch upstream, not aarchbio) —
-it's measured and reported, but it isn't part of the "aarchbio unblocks it" claim.
+`N` (fan-out) is the knob: set `SAMPLES_PER_SITE = N/3` in `config.py`. Everything
+else (FSx, ECR pull-through cache, staged DBs) is reusable across runs.
 
-## Procedure
+```bash
+# 0. one-time: stage DBs from canonical sources onto FSx (gated — launch yourself)
+python benchmark/build_fsx_db.py --plan      # prints the plan + the spawn commands
+#    run the printed staging-instance command, then the printed --fsx-create command,
+#    scope the DRA to the dbs-fsx prefix, and set FSX_ID/FSX_MOUNT in config.py.
 
-1. **x86 baseline** — on the pre-diff-(b) config (all x86), `SAMPLE_COUNT=5`.
-   Set `HEAD_INSTANCE_TYPE = "c7i.large"` (config.py default). Run the demo, then
-   pull the trace **and the data-movement timings**:
-   ```
-   SAMPLE_COUNT=5 AWS_PROFILE=aws uv run python run_headless.py
-   aws s3 cp s3://$BUCKET/results/$JOB_NAME/trace.tsv benchmark/results/x86.tsv
-   aws s3 cp s3://$BUCKET/results/$JOB_NAME/staging/ benchmark/results/x86-staging/ --recursive
-   ```
-2. **arm64** — apply diff (b) to `nextflow_config.py`, set
-   `HEAD_INSTANCE_TYPE = "c7g.large"`, set `AMI_ID_ARM64` to the rebaked AMI, then:
-   ```
-   SAMPLE_COUNT=5 AWS_PROFILE=aws uv run python run_headless.py
-   aws s3 cp s3://$BUCKET/results/$JOB_NAME/trace.tsv benchmark/results/arm64.tsv
-   aws s3 cp s3://$BUCKET/results/$JOB_NAME/staging/ benchmark/results/arm64-staging/ --recursive
-   ```
-   (This run *is* the diff-(b) rehearsal — it exercises every step native: light
-   steps on the rebaked AMI, the Kraken2 mull doing real classification, and the
-   `ubuntu:20.04` override for the standard-report step.)
-3. **Diff** the two traces, including the data-movement section:
-   ```
-   python benchmark/diff_traces.py benchmark/results/x86.tsv benchmark/results/arm64.tsv \
-       --x86-staging benchmark/results/x86-staging \
-       --arm64-staging benchmark/results/arm64-staging \
-       --json benchmark/results/comparison.json --n 5
-   ```
+# 1. run the pipeline at N for this arch (set BENCH_ARCH = "arm64" or "x86" in config.py)
+SAMPLE_COUNT=$N AWS_PROFILE=aws uv run python run_headless.py
 
-## Data movement (staging from sources)
+# 2. pull the artifacts that survive instance teardown
+aws s3 cp s3://$BUCKET/results/$JOB/nextflow.head.log benchmark/results/lifecycle/$ARCH-n$N/
+aws s3 cp s3://$BUCKET/results/$JOB/trace.tsv          benchmark/results/lifecycle/$ARCH-n$N/
+aws s3 sync s3://$BUCKET/results/$JOB/                 benchmark/results/lifecycle/$ARCH-n$N/ \
+    --exclude "*" --include "*kraken2*report*" --include "*metaphlan*profile*"
 
-Beyond the per-stage compute table, each FETCH_FASTQ task emits a per-sample
-`results/<job>/staging/<sample>.timings.json` capturing **how much data and how
-long to stage + process from the source**:
+# 3. per-stage arch timing + biology
+python benchmark/analyze_study.py \
+    --arm64-log  benchmark/results/lifecycle/arm64-n$N/nextflow.head.log \
+    --x86-log    benchmark/results/lifecycle/x86-n$N/nextflow.head.log \
+    --x86-kraken benchmark/results/lifecycle/x86-n$N/kraken2 \
+    --x86-metaphlan benchmark/results/lifecycle/x86-n$N/metaphlan \
+    --json benchmark/results/lifecycle/study-n$N.json
 
-| field | meaning |
-|-------|---------|
-| `roda_download_s` / `roda_bytes` / `roda_mbps` | pulling the SRA from RODA (`s3://sra-pub-run-odp/`) — the source-staging cost + throughput |
-| `fasterq_dump_s` | SRA → FASTQ conversion time |
-| `pigz_s` / `fastq_gz_bytes` | compression time + compressed output size |
-| `instance_type`, `vcpus`, `net_driver`, `az`, `lifecycle`, `arch` | **environment provenance** — these times are placement/network-dependent, so every number is qualified by where it ran |
+# 4. render the end-to-end lifecycle report from a recorded leg
+python benchmark/lifecycle_metrics.py benchmark/results/lifecycle/arm64-n$N-fsx.json
+```
 
-`diff_traces.py --x86-staging/--arm64-staging` aggregates these into a
-data-movement summary (median throughput + phase times per leg, with the env
-line). Times are inherently variable by instance type, ENA bandwidth, AZ, and
-RODA-side load — the env block is printed so the numbers are interpretable, not
-treated as absolute.
+## Results layout
 
-## DB delivery: copy time as compute cost vs. EBS cost
+```
+results/lifecycle/
+  MEASUREMENTS.md            running log of every measured phase (the narrative)
+  arm64-n30-fsx.json         per-leg lifecycle record (phases, time, data, cost)
+  x86-n30-fsx.json
+  staging_timings_*.json     per-arch DB staging phase timings
+  biology_x86_n30.json       community structure + diversity + HMP validation
+  arm64-n30/ , x86-n30/      head log, trace, per-stage json, classifier profiles
+results/_archive/            superseded N=3 EBS+FSR pilots (provenance only)
+```
 
-`diff_traces.py` also compares the three ways to get a reference DB onto each
-task — centered on **copying: how long it takes and what that time costs**. The
-key trade: on the per-task-download approach the worker sits *running and billed*
-while it copies the DB, so copy-time is **wasted compute-$** on the task instance;
-the zero-copy volume replaces that with a little EBS-$ for the attach window.
+## Fairness in one line
 
-| approach | copy on worker | compute-$ during copy | EBS-$ |
-|----------|----------------|------------------------|-------|
-| **A — baked AMI** | 0 (DB in root) | $0 | DB GiB on each task root + bigger AMI snapshot |
-| **B — per-task S3 download** (#37) | DB_GiB ÷ throughput | **copy_s × instance $/hr × N** ← the wasted compute | ~0 |
-| **C — zero-copy volume** (nf-spawn 0.6.0) | ~0 (symlink+mount) | ~$0 | DB GiB × gp3 × task-hours + standing snapshot |
-
-Download time is estimated from the **measured** S3→instance throughput (the
-staging `roda_mbps`, a same-region proxy); compute-$ uses each consuming stage's
-real instance (`r7g.2xlarge` Kraken2, `r7g.4xlarge` MetaPhlAn) and `realtime`.
-Example (N=3, 200 MB/s): per-task download burns **~$0.19/run** of wasted compute
-(MetaPhlAn's 40 GB ≈ 205 s/task) vs **~$0.002/run** EBS for zero-copy — a ~100×
-swing that widens with DB size × instance price. Snapshot storage (24+40 GiB ×
-$0.05/GB-mo) is standing, amortized across runs. Printed per-stage + in `--json`
-under `db_delivery_comparison`.
-
-## Honesty requirements (baked into diff_traces.py)
-
-- **N=5 is a pilot, not a census** — printed on every report; variance is real.
-- **Per-stage, not just total** — Kraken2 (memory-bound) is the swing factor we
-  can't predict from price alone.
-- **Negative results stay in** — a stage slower on arm64 is flagged `⚠ arm64
-  SLOWER`, never dropped.
-- **Failed tasks invalidate a comparison** — any nonzero exit on either leg flags
-  `✗ FAILED TASKS`; a "faster" run that silently failed a step isn't faster.
-- **Price/hr ratio is fixed (~19%); the runtime ratio is what's measured** —
-  `$/run = price/hr × measured duration`. The two are reported separately.
-- **Median + min–max, never a mean or single number.**
+Only architecture differs: same samples, matched `c7i↔c7g`/`r7i↔r7g` pairs, **no
+burstable instances** in the measured path, same region/AZ, same taxprofiler 2.0.0,
+native containers on both legs. Per-stage timing is **EC2 billed lifetime**, not
+trace `realtime`. The full list is in [../docs/methodology.md](../docs/methodology.md).
